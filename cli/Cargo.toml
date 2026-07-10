@@ -1,0 +1,13 @@
+[package]
+name = "wag"
+version = "0.1.0"
+edition = "2021"
+description = "Shell-native client for the Waggle stigmergic coordination substrate. Zero dependencies: one static binary any agent can call from Bash."
+
+[[bin]]
+name = "wag"
+path = "src/main.rs"
+
+[profile.release]
+strip = true
+lto = true
