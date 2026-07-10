@@ -86,6 +86,11 @@ TOOLS = [
                 "kind": {"type": "string", "enum": KINDS},
                 "intensity": {"type": "number", "description": "0-10, default 1. Use higher for stronger findings."},
                 "half_life_s": {"type": "number", "description": "Decay half-life in seconds, default 1800."},
+                "decay": {
+                    "type": "string", "enum": ["exp", "power"],
+                    "description": "Decay kernel. 'exp' (default) forgets completely; 'power' is heavy-tailed — halves at one half-life but fades to background instead of nothing. Use for durable findings (gold, warn).",
+                },
+                "alpha": {"type": "number", "description": "Power-law exponent, default 1. Higher = faster tail."},
                 "note": {"type": "string", "description": "Free text for whoever sniffs this later."},
             },
             "required": ["resource", "kind"],
@@ -96,7 +101,9 @@ TOOLS = [
         "description": (
             "Ranked hotspots: where is the swarm's attention right now? Filter "
             "kind=help for a rescue map, kind=gold for a findings map, kind=dead-end "
-            "for a map of what to avoid."
+            "for a map of what to avoid. To orient in a large space, zoom "
+            "coarse-to-fine: call with depth=1, descend into the hottest subtree "
+            "with depth=2, and so on — O(tree depth) instead of O(resources)."
         ),
         "inputSchema": {
             "type": "object",
@@ -104,6 +111,7 @@ TOOLS = [
                 "prefix": {"type": "string"},
                 "kind": {"type": "string", "enum": KINDS},
                 "k": {"type": "integer", "description": "Top-k hotspots, default 20."},
+                "depth": {"type": "integer", "description": "Roll signals up to this URI-tree level (0=scheme, 1=first path segment, ...). Omit for individual resources."},
             },
         },
     },

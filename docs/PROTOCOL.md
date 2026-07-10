@@ -23,10 +23,23 @@ Base URL default: `http://127.0.0.1:7777`.
 }
 ```
 
-Current intensity at time *t* is `intensity * 2^(-(t - deposited_at) / half_life_s)`.
 Signals below `0.01` are evaporated: invisible to reads and swept from memory.
 A deposit by the same `(agent, resource, kind)` **reinforces**: new intensity =
 current decayed value + deposit, capped at 10, decay clock reset.
+
+**Decay kernels.** Two kernels, selected per signal with `decay`:
+
+- `"exp"` (default): `intensity * 2^(-age / half_life_s)` — complete
+  forgetting at a constant relative rate. Right for `explored`, `heartbeat`,
+  `dead-end`: knowledge that goes fully stale.
+- `"power"`: `intensity * (1 + age/scale)^-alpha` with `scale` calibrated so
+  the signal still halves at exactly one half-life (`alpha` defaults to 1).
+  Heavy-tailed: after 10 half-lives an exponential signal is at 0.1%, a
+  power-law one at ~9%. Right for `gold` and `warn`: findings that should
+  fade to background, not to nothing.
+
+Both kernels agree at age 0 and at one half-life, so `half_life_s` means the
+same thing everywhere.
 
 **Resource** — any URI. Conventions: `repo://path`, `task://id`, `topic://name`, URLs.
 
@@ -49,13 +62,21 @@ shared namespaces are by convention.
 - `GET /v1/agents/{id}` → profile or 404.
 
 ### Signals
-- `POST /v1/signals` `{agent, resource, kind, intensity?, half_life_s?, note?, meta?}`
+- `POST /v1/signals` `{agent, resource, kind, intensity?, half_life_s?, decay?, alpha?, note?, meta?}`
   → the stored (possibly reinforced) signal. 400 if agent/resource/kind missing.
+  Unknown `decay` values canonicalize to exponential.
 - `GET /v1/sniff?resource=|prefix=|kind=|agent=|min=|limit=` → `{signals: [...]}`
   with intensities decayed to now, strongest first. Default `min` is the
   evaporation threshold, default `limit` 200.
-- `GET /v1/gradient?prefix=|kind=|k=` → `{hotspots: [...]}` resources ranked by
-  summed live intensity: `{resource, total, by_kind, agents, top_signal}`.
+- `GET /v1/gradient?prefix=|kind=|k=|depth=` → `{hotspots: [...]}` ranked by
+  summed live intensity: `{resource, total, resources, by_kind, agents, top_signal}`.
+  Without `depth`, entries are individual resources. With `depth=N`, signals
+  roll up to level N of the URI tree (`0` = scheme, `1` = first path segment,
+  ...); `resources` counts distinct leaves in the group and `top_signal`
+  points at the strongest real leaf signal. The gradient is self-similar:
+  orient at `depth=1`, descend into the hottest subtree at `depth=2` with a
+  narrowed `prefix`, repeat — O(tree depth) calls to localize the swarm's
+  attention in any size field.
 
 ### Claims
 - `POST /v1/claims` `{agent, resource, ttl_s?}` — default TTL 300s.

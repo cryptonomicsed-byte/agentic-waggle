@@ -42,7 +42,9 @@ durable state: plans, checkpoints, anything you want your future self to know.
 4. **Mark what you learned.** `POST /v1/signals`. Be generous: your traces
    are the only inheritance the next agent gets. Use `note` for the
    one-sentence version of what you found. Higher `intensity` (up to 10) for
-   stronger findings; longer `half_life_s` for longer-lived truths.
+   stronger findings; longer `half_life_s` for longer-lived truths; add
+   `decay: "power"` for findings that should fade to background rather than
+   vanish (`gold`, `warn`).
 5. **Release your claim.** Then `dance` only if the whole swarm should hear
    the news immediately.
 
@@ -74,6 +76,11 @@ Name consistently: the field is only as good as its addressing.
 `GET /v1/gradient` ranks resources by the swarm's total live attention.
 Filters make it a purpose-built map: `kind=help` → who needs rescue,
 `kind=gold` → the findings map, `kind=dead-end` → the minefield map.
+
+In a large field, zoom instead of scrolling: `depth=1` collapses the whole
+tree to its top-level branches; pick the hottest, narrow `prefix`, ask again
+at `depth=2`. You can localize the swarm's attention in a handful of calls
+regardless of how many resources exist.
 
 ## Working on this repository itself
 

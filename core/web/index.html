@@ -98,10 +98,58 @@ function fit(){ const r = canvas.getBoundingClientRect();
   ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0); }
 addEventListener('resize', fit); fit();
 
-// deterministic layout: hash resource URI -> stable position in the field
+// Fractal layout: each resource's URI tree path is mapped onto a Hilbert
+// space-filling curve. The scheme picks the top-level quadrant, each path
+// segment picks a sub-quadrant, so siblings land in the same region at every
+// scale — a hot directory literally glows as a hot patch of the field, and
+// the map is self-similar however deep the tree goes.
 function hash(s){ let h=2166136261; for(const c of s){ h^=c.charCodeAt(0); h=Math.imul(h,16777619);} return h>>>0; }
-function pos(res){ const h = hash(res), w = canvas.clientWidth;
-  return { x: 60 + (h % 1000)/1000 * (w-120), y: 60 + ((h>>>10) % 1000)/1000 * (520-120) }; }
+const ORDER = 8; // 8 tree levels, 2 bits each -> 256x256 Hilbert grid
+function d2xy(d){ // standard Hilbert curve index -> (x,y), side 2^ORDER
+  let x=0, y=0;
+  for (let s=1; s < (1<<ORDER); s<<=1){
+    const rx = 1 & (d>>1), ry = 1 & (d ^ rx);
+    if (ry === 0){ if (rx === 1){ x = s-1-x; y = s-1-y; } const t=x; x=y; y=t; }
+    x += s*rx; y += s*ry; d >>>= 2;
+  }
+  return [x,y];
+}
+function hilbertIndex(res){
+  let scheme = res, rest = '';
+  const i = res.indexOf('://');
+  if (i >= 0){ scheme = res.slice(0, i); rest = res.slice(i+3); }
+  const segs = [scheme, ...rest.split('/').filter(Boolean)];
+  let d = 0;
+  for (let lvl = 0; lvl < ORDER; lvl++){
+    // real segments steer; missing depth spreads leaves inside their parent cell
+    const bits = (lvl < segs.length ? hash(segs[lvl]) : hash(res + '#' + lvl)) & 3;
+    d = (d << 2) | bits;
+  }
+  return d >>> 0;
+}
+function rawPos(res){
+  const [hx, hy] = d2xy(hilbertIndex(res));
+  return { x: hx + .5, y: hy + .5 }; // Hilbert grid coords, 0..2^ORDER
+}
+// Auto-fitting viewport: the fractal layout nests deep trees into small
+// cells, so the camera continuously zooms to the occupied region (eased, to
+// stay calm). view = current, viewT = target.
+let view = { x0:0, y0:0, span: 1<<ORDER }, viewT = { ...view };
+function refit(points){
+  if (!points.length) return;
+  let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
+  for (const p of points){
+    minX=Math.min(minX,p.x); maxX=Math.max(maxX,p.x);
+    minY=Math.min(minY,p.y); maxY=Math.max(maxY,p.y);
+  }
+  const span = Math.max(maxX-minX, maxY-minY, 4) * 1.3;
+  viewT = { x0:(minX+maxX)/2 - span/2, y0:(minY+maxY)/2 - span/2, span };
+}
+function pos(res){
+  const r = rawPos(res), w = canvas.clientWidth;
+  return { x: 60 + (r.x - view.x0)/view.span * (w-120),
+           y: 60 + (r.y - view.y0)/view.span * (520-120) };
+}
 
 let hotspots = [], ripples = [];
 async function poll(){
@@ -112,6 +160,7 @@ async function poll(){
       fetch('/v1/agents').then(r=>r.json()),
     ]);
     hotspots = g.hotspots || [];
+    refit(hotspots.map(h => rawPos(h.resource)));
     for (const [id,k] of [['s-agents','agents'],['s-res','resources'],['s-sig','signals'],['s-claims','claims']])
       document.getElementById(id).textContent = st[k];
     const now = Date.now();
@@ -134,11 +183,11 @@ function addEv(type, text, color){
 const es = new EventSource('/v1/events');
 es.addEventListener('signal', e => { const s = JSON.parse(e.data).payload;
   addEv(s.kind, `${s.agent} → ${s.resource}`, KINDS[s.kind]);
-  const p = pos(s.resource); ripples.push({...p, r:4, max:60, color:KINDS[s.kind]||'#fff', a:1});
+  ripples.push({res:s.resource, r:4, max:60, color:KINDS[s.kind]||'#fff', a:1});
 });
 es.addEventListener('claim', e => { const c = JSON.parse(e.data).payload;
   addEv('claim', `${c.agent} ⇒ ${c.resource}`, KINDS.claimed);
-  const p = pos(c.resource); ripples.push({...p, r:4, max:44, color:KINDS.claimed, a:1});
+  ripples.push({res:c.resource, r:4, max:44, color:KINDS.claimed, a:1});
 });
 es.addEventListener('release', e => { const c = JSON.parse(e.data).payload;
   addEv('release', `${c.agent} ⇐ ${c.resource}`, KINDS.heartbeat); });
@@ -149,12 +198,16 @@ es.addEventListener('dance', e => { const d = JSON.parse(e.data).payload;
 es.addEventListener('agent', e => { const a = JSON.parse(e.data).payload;
   addEv('join', a.name, KINDS.handoff); });
 
-// render loop: hotspot glows breathe and shrink as intensity decays
+// render loop: hotspot glows breathe and shrink as intensity decays; the
+// camera eases toward the occupied region of the fractal grid
 function draw(){
   const w = canvas.clientWidth;
   ctx.clearRect(0,0,w,520);
   const t = performance.now()/1000;
-  for (const h of hotspots){
+  view.x0 += (viewT.x0 - view.x0) * .04;
+  view.y0 += (viewT.y0 - view.y0) * .04;
+  view.span += (viewT.span - view.span) * .04;
+  hotspots.forEach((h, i) => {
     const p = pos(h.resource);
     const kind = h.top_signal ? h.top_signal.kind : 'explored';
     const color = KINDS[kind] || '#3fd0ff';
@@ -163,15 +216,19 @@ function draw(){
     grad.addColorStop(0, color + 'cc'); grad.addColorStop(.4, color + '33'); grad.addColorStop(1, 'transparent');
     ctx.fillStyle = grad;
     ctx.beginPath(); ctx.arc(p.x,p.y,r*2.4,0,7); ctx.fill();
-    ctx.fillStyle = '#e8ecf8';
-    ctx.font = '10px ui-monospace,monospace'; ctx.textAlign = 'center'; ctx.globalAlpha = .75;
-    const label = h.resource.length > 34 ? '…'+h.resource.slice(-33) : h.resource;
-    ctx.fillText(label, p.x, p.y + r*1.4 + 12); ctx.globalAlpha = 1;
-  }
+    if (i < 12){ // label only the strongest hotspots; the rest just glow
+      ctx.fillStyle = '#e8ecf8';
+      ctx.font = '10px ui-monospace,monospace'; ctx.textAlign = 'center'; ctx.globalAlpha = .75;
+      const label = h.resource.length > 34 ? '…'+h.resource.slice(-33) : h.resource;
+      ctx.fillText(label, p.x, p.y + r*1.4 + 12); ctx.globalAlpha = 1;
+    }
+  });
   for (let i=ripples.length-1; i>=0; i--){
-    const rp = ripples[i]; rp.r += (rp.max-rp.r)*.06; rp.a *= .965;
+    const rp = ripples[i];
+    const p = rp.res ? pos(rp.res) : { x: w/2, y: 260 };
+    rp.r += (rp.max-rp.r)*.06; rp.a *= .965;
     ctx.strokeStyle = rp.color; ctx.globalAlpha = rp.a; ctx.lineWidth = 1.6;
-    ctx.beginPath(); ctx.arc(rp.x,rp.y,rp.r,0,7); ctx.stroke(); ctx.globalAlpha = 1;
+    ctx.beginPath(); ctx.arc(p.x,p.y,rp.r,0,7); ctx.stroke(); ctx.globalAlpha = 1;
     if (rp.a < .03) ripples.splice(i,1);
   }
   requestAnimationFrame(draw);

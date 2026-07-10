@@ -165,7 +165,13 @@ func (s *Server) handleSniff(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGradient(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	k, _ := strconv.Atoi(q.Get("k"))
-	hs := s.field.Gradient(q.Get("prefix"), q.Get("kind"), k)
+	depth := -1 // leaf level unless the caller asks for a coarser scale
+	if d := q.Get("depth"); d != "" {
+		if n, err := strconv.Atoi(d); err == nil {
+			depth = n
+		}
+	}
+	hs := s.field.Gradient(q.Get("prefix"), q.Get("kind"), k, depth)
 	if hs == nil {
 		hs = []Hotspot{}
 	}

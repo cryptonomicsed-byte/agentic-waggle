@@ -11,11 +11,16 @@ the field, act, and mark the field; intelligence emerges from the traces.
 ```
 $ python3 examples/forage_swarm.py
 
-releasing 8 workers over 60 sites (9 hold nectar) — no orchestrator, no messages, only scent
+releasing 8 workers over 60 sites in 6 patches (9 nectar, clustered in 2 patches)
+strategy: Lévy walk (mu=1.5) — no orchestrator, no messages, only scent
 
 sites searched        : 60 / 60
 duplicated searches   : 0
 nectar found          : 9 / 9
+
+gold gradient at depth 2 (the findings map, one entry per patch):
+  field://meadow/patch-2  total=24.99  sites=5  by worker-0, worker-4, worker-6
+  field://meadow/patch-3  total=19.99  sites=4  by worker-2, worker-3
 
 SWARM OK — perfect division of labor, zero waste
 ```
@@ -39,6 +44,27 @@ The load-bearing idea is **decay**. A signal deposited with intensity 4 and a
 few hours. Re-marking reinforces the trail and resets its clock. The field is
 therefore always *current*: hot paths stay hot because agents keep them hot,
 and abandoned knowledge deletes itself.
+
+## The Mandelbrot layer
+
+The field's geometry is fractal, and the substrate leans into it:
+
+- **Multi-scale gradients** — resources form a URI tree, and
+  `gradient?depth=N` rolls signals up to any level of it. An agent orients
+  the way you zoom a fractal: coarse map at `depth=1`, descend into the
+  hottest subtree, ask again. O(tree depth) calls to localize the swarm's
+  attention in a field of any size.
+- **Heavy-tailed decay** — `decay: "power"` swaps the exponential kernel for
+  a power law, calibrated to the same half-life. Failures (`dead-end`) may be
+  completely forgotten; findings (`gold`, `warn`) fade to background but keep
+  a long tail, the way knowledge actually ages.
+- **Lévy-flight foraging** — the reference swarm searches with power-law step
+  lengths (mostly local scanning, occasional long jumps), the strategy
+  optimal foragers use on clustered targets.
+- **A fractal Observatory** — resources are placed by mapping their URI tree
+  onto a Hilbert space-filling curve, so siblings share a region at every
+  scale: a hot directory glows as a hot patch of the map, and the camera
+  auto-zooms to the occupied region.
 
 ## The five-verb protocol
 

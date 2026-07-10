@@ -20,16 +20,34 @@ type Signal struct {
 	Kind        string            `json:"kind"`
 	Intensity   float64           `json:"intensity"`
 	HalfLifeS   float64           `json:"half_life_s"`
+	Decay       string            `json:"decay,omitempty"` // "" or "exp" (exponential), "power" (heavy tail)
+	Alpha       float64           `json:"alpha,omitempty"` // power-law exponent, default 1
 	Note        string            `json:"note,omitempty"`
 	Meta        map[string]string `json:"meta,omitempty"`
 	DepositedAt time.Time         `json:"deposited_at"`
 }
 
 // At returns the decayed intensity of the signal at time t.
+//
+// The default kernel is exponential: intensity * 2^(-age/half_life). The
+// "power" kernel is heavy-tailed: intensity * (1 + age/scale)^-alpha, with
+// scale calibrated so the signal still halves at exactly one half-life. Both
+// kernels agree at age 0 and age half_life; past that the power law decays
+// far more slowly — after 10 half-lives an exponential gold signal is at
+// 0.1% while a power-law one (alpha=1) is still at ~9%. Use it for findings
+// that should fade to background, not to nothing.
 func (s *Signal) At(t time.Time) float64 {
 	age := t.Sub(s.DepositedAt).Seconds()
 	if age <= 0 {
 		return s.Intensity
+	}
+	if s.Decay == "power" {
+		alpha := s.Alpha
+		if alpha <= 0 {
+			alpha = 1
+		}
+		scale := s.HalfLifeS / (math.Pow(2, 1/alpha) - 1)
+		return s.Intensity * math.Pow(1+age/scale, -alpha)
 	}
 	return s.Intensity * math.Exp2(-age/s.HalfLifeS)
 }
@@ -101,6 +119,10 @@ func (f *Field) Deposit(sig Signal) Signal {
 	if sig.HalfLifeS <= 0 {
 		sig.HalfLifeS = DefaultHalfLifeS
 	}
+	if sig.Decay != "power" {
+		sig.Decay = "" // canonical exponential
+		sig.Alpha = 0
+	}
 	sig.DepositedAt = now
 
 	f.mu.Lock()
@@ -112,6 +134,8 @@ func (f *Field) Deposit(sig Signal) Signal {
 			s.Intensity = math.Min(s.At(now)+sig.Intensity, maxIntensity)
 			s.DepositedAt = now
 			s.HalfLifeS = sig.HalfLifeS
+			s.Decay = sig.Decay
+			s.Alpha = sig.Alpha
 			if sig.Note != "" {
 				s.Note = sig.Note
 			}
@@ -194,20 +218,53 @@ func (f *Field) Sniff(q SniffQuery) []Signal {
 	return out
 }
 
-// Hotspot is one entry of a gradient reading: a resource ranked by the summed
-// current intensity of its signals.
+// Hotspot is one entry of a gradient reading: a resource (or, at depth > 0,
+// a whole subtree of resources) ranked by the summed current intensity of its
+// signals.
 type Hotspot struct {
 	Resource  string             `json:"resource"`
 	Total     float64            `json:"total"`
+	Resources int                `json:"resources"` // distinct resources aggregated under this entry
 	ByKind    map[string]float64 `json:"by_kind"`
 	Agents    []string           `json:"agents"`
 	TopSignal *Signal            `json:"top_signal,omitempty"`
 }
 
+// prefixAt returns a resource's ancestor at the given depth of its URI tree:
+// depth counts path segments after the scheme, so for
+// repo://src/auth/token.go depth 0 is "repo://", depth 1 "repo://src",
+// depth 2 "repo://src/auth". Depth at or beyond the leaf, or depth < 0,
+// returns the resource itself.
+func prefixAt(resource string, depth int) string {
+	if depth < 0 {
+		return resource
+	}
+	scheme := ""
+	rest := resource
+	if i := strings.Index(resource, "://"); i >= 0 {
+		scheme = resource[:i+3]
+		rest = resource[i+3:]
+	}
+	segs := strings.Split(rest, "/")
+	// drop trailing empty segment from a trailing slash
+	for len(segs) > 0 && segs[len(segs)-1] == "" {
+		segs = segs[:len(segs)-1]
+	}
+	if depth >= len(segs) {
+		return resource
+	}
+	return scheme + strings.Join(segs[:depth], "/")
+}
+
 // Gradient aggregates the field into ranked hotspots so an agent can answer
 // "where is the swarm's attention?" in one call. Filtering by kind gives
 // kind-specific gradients ("where is help needed?", "what is gold right now?").
-func (f *Field) Gradient(prefix, kind string, k int) []Hotspot {
+//
+// depth < 0 ranks individual resources. depth >= 0 rolls signals up to that
+// level of the URI tree, giving a self-similar coarse-to-fine view: an agent
+// orients by sniffing the field at depth 1, descending into the hottest
+// subtree at depth 2, and so on — O(tree depth) instead of O(resources).
+func (f *Field) Gradient(prefix, kind string, k, depth int) []Hotspot {
 	now := f.clock()
 	if k <= 0 {
 		k = 20
@@ -215,10 +272,12 @@ func (f *Field) Gradient(prefix, kind string, k int) []Hotspot {
 
 	f.mu.RLock()
 	agg := make(map[string]*Hotspot)
+	members := make(map[string]map[string]struct{}) // group -> distinct resources
 	for res, sigs := range f.byRes {
 		if prefix != "" && !strings.HasPrefix(res, prefix) {
 			continue
 		}
+		group := prefixAt(res, depth)
 		for _, s := range sigs {
 			if kind != "" && s.Kind != kind {
 				continue
@@ -227,11 +286,13 @@ func (f *Field) Gradient(prefix, kind string, k int) []Hotspot {
 			if cur < evaporated {
 				continue
 			}
-			h := agg[res]
+			h := agg[group]
 			if h == nil {
-				h = &Hotspot{Resource: res, ByKind: map[string]float64{}}
-				agg[res] = h
+				h = &Hotspot{Resource: group, ByKind: map[string]float64{}}
+				agg[group] = h
+				members[group] = map[string]struct{}{}
 			}
+			members[group][res] = struct{}{}
 			h.Total += cur
 			h.ByKind[s.Kind] += cur
 			if !contains(h.Agents, s.Agent) {
@@ -246,7 +307,8 @@ func (f *Field) Gradient(prefix, kind string, k int) []Hotspot {
 	f.mu.RUnlock()
 
 	out := make([]Hotspot, 0, len(agg))
-	for _, h := range agg {
+	for group, h := range agg {
+		h.Resources = len(members[group])
 		out = append(out, *h)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Total > out[j].Total })

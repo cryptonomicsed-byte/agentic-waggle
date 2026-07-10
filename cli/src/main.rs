@@ -23,10 +23,14 @@ usage: wag <command> [args] [--flags]
                           --id ID --name NAME --skills a,b --goals "g1,g2"
   mark <resource> <kind>  deposit a decaying signal
                           --intensity N --half-life SECS --note TEXT
+                          --decay exp|power (power = heavy tail: fades to
+                          background, not to nothing) --alpha N
   sniff                 read the field
                           --resource URI | --prefix URI [--kind K] [--min N] [--limit N]
   gradient              ranked hotspots: where is the swarm's attention?
                           [--prefix URI] [--kind K] [--k N]
+                          [--depth N]  roll up to URI-tree level N and zoom
+                          in coarse-to-fine (0=scheme, 1=first segment, ...)
   claim <resource>      acquire/renew an exclusive lease (--ttl SECS)
                           exit 0 granted, exit 3 held by another agent
   release <resource>    release a held lease
@@ -57,7 +61,7 @@ fn main() {
         "register" => register(&host, &flags),
         "mark" => mark(&host, &pos, &flags),
         "sniff" => get(&host, &format!("/v1/sniff{}", query(&flags, &[("resource", "resource"), ("prefix", "prefix"), ("kind", "kind"), ("agent", "agent"), ("min", "min"), ("limit", "limit")]))),
-        "gradient" => get(&host, &format!("/v1/gradient{}", query(&flags, &[("prefix", "prefix"), ("kind", "kind"), ("k", "k")]))),
+        "gradient" => get(&host, &format!("/v1/gradient{}", query(&flags, &[("prefix", "prefix"), ("kind", "kind"), ("k", "k"), ("depth", "depth")]))),
         "claim" => claim(&host, &pos, &flags),
         "release" => release(&host, &pos, &flags),
         "claims" => get(&host, "/v1/claims"),
@@ -140,6 +144,12 @@ fn mark(host: &str, pos: &[String], flags: &Flags) -> Out {
     }
     if let Some(v) = flags.get("half-life") {
         body.raw("half_life_s", &num(v, "--half-life")?);
+    }
+    if let Some(d) = flags.get("decay") {
+        body.str("decay", d);
+    }
+    if let Some(v) = flags.get("alpha") {
+        body.raw("alpha", &num(v, "--alpha")?);
     }
     if let Some(n) = flags.get("note") {
         body.str("note", n);

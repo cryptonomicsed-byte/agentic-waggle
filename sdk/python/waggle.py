@@ -47,11 +47,18 @@ class Agent:
     # ---- field ----------------------------------------------------------
 
     def mark(self, resource: str, kind: str, *, intensity: float = 1.0,
-             half_life_s: float = 0, note: str = "") -> dict:
-        """Deposit a decaying signal; re-marking the same kind reinforces it."""
+             half_life_s: float = 0, decay: str = "", alpha: float = 0,
+             note: str = "") -> dict:
+        """Deposit a decaying signal; re-marking the same kind reinforces it.
+
+        decay="power" uses a heavy-tailed kernel: still halves at one
+        half-life, but fades to background instead of nothing — for durable
+        findings (gold, warn). alpha (default 1) steepens the tail.
+        """
         return self._http("POST", "/v1/signals", body={
             "agent": self.id, "resource": resource, "kind": kind,
-            "intensity": intensity, "half_life_s": half_life_s, "note": note})
+            "intensity": intensity, "half_life_s": half_life_s,
+            "decay": decay, "alpha": alpha, "note": note})
 
     def sniff(self, *, resource: str = "", prefix: str = "", kind: str = "",
               agent: str = "", min_intensity: float = 0, limit: int = 0) -> list[dict]:
@@ -60,10 +67,17 @@ class Agent:
             "resource": resource, "prefix": prefix, "kind": kind,
             "agent": agent, "min": min_intensity or "", "limit": limit or ""})["signals"]
 
-    def gradient(self, *, prefix: str = "", kind: str = "", k: int = 0) -> list[dict]:
-        """Ranked hotspots: where is the swarm's attention?"""
+    def gradient(self, *, prefix: str = "", kind: str = "", k: int = 0,
+                 depth: int = -1) -> list[dict]:
+        """Ranked hotspots: where is the swarm's attention?
+
+        depth >= 0 rolls signals up to that URI-tree level (0=scheme,
+        1=first segment, ...) for a coarse-to-fine zoomable view; the
+        default ranks individual resources.
+        """
         return self._http("GET", "/v1/gradient", params={
-            "prefix": prefix, "kind": kind, "k": k or ""})["hotspots"]
+            "prefix": prefix, "kind": kind, "k": k or "",
+            "depth": depth if depth >= 0 else ""})["hotspots"]
 
     # ---- claims ----------------------------------------------------------
 

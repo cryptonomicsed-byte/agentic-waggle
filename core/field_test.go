@@ -110,7 +110,7 @@ func TestGradientRanksBySummedIntensity(t *testing.T) {
 	f.Deposit(Signal{Agent: "a2", Resource: "repo://hot", Kind: "explored", Intensity: 3})
 	f.Deposit(Signal{Agent: "a1", Resource: "repo://cold", Kind: "explored", Intensity: 1})
 
-	hs := f.Gradient("repo://", "", 10)
+	hs := f.Gradient("repo://", "", 10, -1)
 	if len(hs) != 2 {
 		t.Fatalf("want 2 hotspots, got %d", len(hs))
 	}
@@ -125,9 +125,106 @@ func TestGradientRanksBySummedIntensity(t *testing.T) {
 	}
 
 	// kind-filtered gradient: only gold counts
-	gold := f.Gradient("", "gold", 10)
+	gold := f.Gradient("", "gold", 10, -1)
 	if len(gold) != 1 || gold[0].Resource != "repo://hot" {
 		t.Fatalf("gold gradient wrong: %+v", gold)
+	}
+}
+
+func TestPowerDecayKernel(t *testing.T) {
+	f, clk := newTestField()
+	f.Deposit(Signal{Agent: "a1", Resource: "repo://x", Kind: "gold", Intensity: 4, HalfLifeS: 60, Decay: "power"})
+	f.Deposit(Signal{Agent: "a2", Resource: "repo://x", Kind: "gold", Intensity: 4, HalfLifeS: 60})
+
+	// both kernels halve at exactly one half-life
+	clk.advance(60 * time.Second)
+	sigs := f.Sniff(SniffQuery{Resource: "repo://x"})
+	for _, s := range sigs {
+		if math.Abs(s.Intensity-2) > 1e-9 {
+			t.Fatalf("%s decay at one half-life want 2, got %v", s.Agent, s.Intensity)
+		}
+	}
+
+	// after 10 half-lives the power law has a fat tail, the exponential is gone
+	clk.advance(9 * 60 * time.Second)
+	sigs = f.Sniff(SniffQuery{Resource: "repo://x"})
+	if len(sigs) != 1 || sigs[0].Agent != "a1" {
+		t.Fatalf("want only the power-law signal to survive, got %+v", sigs)
+	}
+	if got := sigs[0].Intensity; got < 0.3 || got > 0.4 { // 4/11 ≈ 0.364
+		t.Fatalf("power tail at 10 half-lives want ~0.364, got %v", got)
+	}
+
+	// alpha=2 decays faster in the tail but still halves at one half-life
+	f2, clk2 := newTestField()
+	f2.Deposit(Signal{Agent: "a1", Resource: "r", Kind: "gold", Intensity: 4, HalfLifeS: 60, Decay: "power", Alpha: 2})
+	clk2.advance(60 * time.Second)
+	if got := f2.Sniff(SniffQuery{Resource: "r"})[0].Intensity; math.Abs(got-2) > 1e-9 {
+		t.Fatalf("alpha=2 at one half-life want 2, got %v", got)
+	}
+
+	// unknown decay strings canonicalize to exponential
+	out := f2.Deposit(Signal{Agent: "a2", Resource: "r", Kind: "gold", Decay: "bogus", Alpha: 7})
+	if out.Decay != "" || out.Alpha != 0 {
+		t.Fatalf("bogus decay must canonicalize to exponential, got %+v", out)
+	}
+}
+
+func TestPrefixAt(t *testing.T) {
+	cases := []struct {
+		res   string
+		depth int
+		want  string
+	}{
+		{"repo://src/auth/token.go", 0, "repo://"},
+		{"repo://src/auth/token.go", 1, "repo://src"},
+		{"repo://src/auth/token.go", 2, "repo://src/auth"},
+		{"repo://src/auth/token.go", 3, "repo://src/auth/token.go"},
+		{"repo://src/auth/token.go", 9, "repo://src/auth/token.go"},
+		{"repo://src/auth/token.go", -1, "repo://src/auth/token.go"},
+		{"https://example.com/a/b", 1, "https://example.com"},
+		{"plain/path/here", 1, "plain"},
+		{"repo://src/dir/", 2, "repo://src/dir/"},
+	}
+	for _, c := range cases {
+		if got := prefixAt(c.res, c.depth); got != c.want {
+			t.Errorf("prefixAt(%q, %d) = %q, want %q", c.res, c.depth, got, c.want)
+		}
+	}
+}
+
+func TestGradientDepthAggregation(t *testing.T) {
+	f, _ := newTestField()
+	f.Deposit(Signal{Agent: "a1", Resource: "repo://src/auth/token.go", Kind: "gold", Intensity: 5})
+	f.Deposit(Signal{Agent: "a2", Resource: "repo://src/auth/session.go", Kind: "explored", Intensity: 3})
+	f.Deposit(Signal{Agent: "a1", Resource: "repo://src/db/conn.go", Kind: "explored", Intensity: 1})
+	f.Deposit(Signal{Agent: "a1", Resource: "docs://readme", Kind: "explored", Intensity: 1})
+
+	// depth 2: the auth subtree rolls up into one hotspot
+	hs := f.Gradient("", "", 10, 2)
+	if len(hs) != 3 {
+		t.Fatalf("depth 2 want 3 groups, got %d: %+v", len(hs), hs)
+	}
+	if hs[0].Resource != "repo://src/auth" || math.Abs(hs[0].Total-8) > 1e-9 {
+		t.Fatalf("hottest subtree wrong: %+v", hs[0])
+	}
+	if hs[0].Resources != 2 {
+		t.Fatalf("auth subtree want 2 distinct resources, got %d", hs[0].Resources)
+	}
+	if hs[0].TopSignal.Resource != "repo://src/auth/token.go" {
+		t.Fatalf("top signal must point at the real leaf, got %s", hs[0].TopSignal.Resource)
+	}
+
+	// depth 1: everything under repo://src is one group
+	hs = f.Gradient("repo://", "", 10, 1)
+	if len(hs) != 1 || hs[0].Resource != "repo://src" || hs[0].Resources != 3 {
+		t.Fatalf("depth 1 rollup wrong: %+v", hs)
+	}
+
+	// depth -1 still ranks leaves
+	hs = f.Gradient("repo://", "", 10, -1)
+	if len(hs) != 3 || hs[0].Resource != "repo://src/auth/token.go" {
+		t.Fatalf("leaf gradient wrong: %+v", hs)
 	}
 }
 
