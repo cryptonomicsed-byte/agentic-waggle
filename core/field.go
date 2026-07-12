@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/cryptonomicsed-byte/agentic/core/kernel"
 )
 
 // Signal is a single scent mark deposited on a resource by an agent.
@@ -48,18 +50,7 @@ type Signal struct {
 // that should fade to background, not to nothing.
 func (s *Signal) At(t time.Time) float64 {
 	age := t.Sub(s.DepositedAt).Seconds()
-	if age <= 0 {
-		return s.Intensity
-	}
-	if s.Decay == "power" {
-		alpha := s.Alpha
-		if alpha <= 0 {
-			alpha = 1
-		}
-		scale := s.HalfLifeS / (math.Pow(2, 1/alpha) - 1)
-		return s.Intensity * math.Pow(1+age/scale, -alpha)
-	}
-	return s.Intensity * math.Exp2(-age/s.HalfLifeS)
+	return kernel.Decay(s.Intensity, s.HalfLifeS, age, s.Decay, s.Alpha)
 }
 
 // snapshot returns a copy of the signal with Intensity/DepositedAt projected
@@ -72,9 +63,9 @@ func (s *Signal) snapshot(t time.Time) Signal {
 
 const (
 	// signals below this intensity are considered evaporated
-	evaporated = 0.01
+	evaporated = kernel.Evaporated
 	// reinforcement can never push a signal above this ceiling
-	maxIntensity = 10.0
+	maxIntensity = kernel.MaxIntensity
 	// defaults applied when a deposit omits them
 	DefaultIntensity = 1.0
 	DefaultHalfLifeS = 1800 // 30 minutes
@@ -147,15 +138,15 @@ func (f *Field) Deposit(sig Signal) Signal {
 	}
 	if sig.Decay == "power" && sig.Alpha <= 0 && typed {
 		if ch.AlphaFromValue && ch.AlphaMax > ch.AlphaMin && ch.AlphaMin > 0 {
-			// confidence-weighted tail: alpha = amax - (amax-amin) * I/10,
-			// so a 10/10 bounded island gets the heaviest tail and an
-			// instant escape the fastest — both halve at one half-life
-			sig.Alpha = ch.AlphaMax - (ch.AlphaMax-ch.AlphaMin)*(sig.Intensity/maxIntensity)
+			// confidence-weighted tail: a 10/10 bounded island gets the
+			// heaviest tail and an instant escape the fastest — both halve
+			// at one half-life
+			sig.Alpha = kernel.AlphaFromValue(sig.Intensity, ch.AlphaMin, ch.AlphaMax)
 		} else if ch.DefaultAlpha > 0 {
 			sig.Alpha = ch.DefaultAlpha
 		}
 	}
-	if _, known := tierWeights[sig.EvidenceTier]; !known {
+	if !kernel.IsTier(sig.EvidenceTier) {
 		sig.EvidenceTier = "self-report"
 	}
 	sig.Effective = 0
@@ -330,13 +321,7 @@ func (f *Field) inhibitionAt(sigs []*Signal, target *Signal, now time.Time) (flo
 		if strongest < 0 {
 			continue
 		}
-		norm := strongest / maxIntensity
-		var m float64
-		if in.Mode == "high" {
-			m = math.Max(in.Floor, 1-norm)
-		} else {
-			m = math.Max(in.Floor, math.Min(1, norm/in.Ref))
-		}
+		m := kernel.Inhibit(in.Mode, strongest, in.Ref, in.Floor)
 		if m < 1 {
 			mult *= m
 			traces = append(traces, InhibitionTrace{SourceKind: in.Source, SourceID: strongestID, Mode: in.Mode, Multiplier: m})
@@ -462,7 +447,7 @@ func (f *Field) GradientOpts(prefix, kind string, k, depth int, weighted, diffus
 			parentTotals[parentOf(res)] += h.Total
 		}
 		for res, h := range agg {
-			if bleed := diffusionRate * (parentTotals[parentOf(res)] - h.Total); bleed > 0 {
+			if bleed := kernel.Diffusion(parentTotals[parentOf(res)] - h.Total); bleed > 0 {
 				h.Total += bleed
 			}
 		}
@@ -482,7 +467,7 @@ func (f *Field) GradientOpts(prefix, kind string, k, depth int, weighted, diffus
 
 // diffusionRate is the fraction of sibling intensity that bleeds into a
 // resource when a gradient is read with diffuse=1.
-const diffusionRate = 0.05
+const diffusionRate = kernel.DiffusionRate
 
 // parentOf returns a resource's immediate parent in its URI tree (the prefix
 // one segment above the leaf), or the resource itself if it has no parent.
@@ -564,7 +549,7 @@ func (f *Field) Explain(resource string) Explanation {
 				}
 			}
 		}
-		ex.Diffusion = diffusionRate * siblingTotal
+		ex.Diffusion = kernel.Diffusion(siblingTotal)
 	}
 	f.mu.RUnlock()
 

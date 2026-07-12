@@ -4,6 +4,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/cryptonomicsed-byte/agentic/core/kernel"
 )
 
 // Watch is a registered derivation rule: instead of asking every system to
@@ -51,7 +53,7 @@ func (ws *Watches) Register(w Watch) Watch {
 	if len(w.Map) == 0 {
 		w.Map = defaultWatchMap()
 	}
-	if _, ok := tierWeights[w.Tier]; !ok {
+	if !kernel.IsTier(w.Tier) {
 		w.Tier = "watch-derived"
 	}
 	if w.CreatedAt.IsZero() {

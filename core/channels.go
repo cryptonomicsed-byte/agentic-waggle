@@ -3,6 +3,8 @@ package main
 import (
 	"sort"
 	"sync"
+
+	"github.com/cryptonomicsed-byte/agentic/core/kernel"
 )
 
 // Inhibition declares that signals on one channel suppress the read-time
@@ -56,42 +58,16 @@ type Channel struct {
 // every consumer reads instead of inventing its own: a self-reported finding
 // weighs a fifth of an on-chain-anchored one at read time, and promotion
 // (corroboration, Zangbeto verification, Sui anchoring) re-deposits at a
-// higher tier rather than rewriting history.
-var EvidenceTiers = []string{
-	"self-report",
-	"corroborated",
-	"watch-derived",
-	"zangbeto-verified",
-	"on-chain-anchored",
-}
-
-var tierWeights = map[string]float64{
-	"self-report":       0.2,
-	"corroborated":      0.4,
-	"watch-derived":     0.6,
-	"zangbeto-verified": 0.8,
-	"on-chain-anchored": 1.0,
-}
+// higher tier rather than rewriting history. Defined in the pure kernel
+// package; re-exported here for the daemon's callers.
+var EvidenceTiers = kernel.EvidenceTiers
 
 // TierWeight returns the read-time weight of an evidence tier. Unknown or
-// empty tiers weigh as self-report: an unverified claim is an unverified
-// claim no matter how it is spelled.
-func TierWeight(tier string) float64 {
-	if w, ok := tierWeights[tier]; ok {
-		return w
-	}
-	return tierWeights["self-report"]
-}
+// empty tiers weigh as self-report.
+func TierWeight(tier string) float64 { return kernel.TierWeight(tier) }
 
 // TierRank orders tiers for min_tier filtering. Unknown tiers rank 0.
-func TierRank(tier string) int {
-	for i, t := range EvidenceTiers {
-		if t == tier {
-			return i
-		}
-	}
-	return 0
-}
+func TierRank(tier string) int { return kernel.TierRank(tier) }
 
 // Channels is the registry behind the manifest's channels block. Registering
 // a channel is how a new power teaches the substrate its signal type — zero
