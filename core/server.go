@@ -29,7 +29,15 @@ type Server struct {
 	store       *Store
 	mux         *http.ServeMux
 	start       time.Time
-	dataDir     string // journal directory; recall needs it ("" = no persistence)
+	dataDir     string         // journal directory; recall needs it ("" = no persistence)
+	metrics     *AttackMetrics // non-nil only under -debug; red-team scoring
+}
+
+// EnableDebug turns on the attack-metrics instrumentation and its endpoint.
+// Off by default so production carries no adversarial-observability overhead.
+func (s *Server) EnableDebug() {
+	s.metrics = NewAttackMetrics()
+	s.mux.HandleFunc("GET /v1/debug/attack-metrics", s.handleAttackMetrics)
 }
 
 func NewServer(store *Store) *Server {
@@ -159,6 +167,7 @@ func (s *Server) handleDeposit(w http.ResponseWriter, r *http.Request) {
 	s.applyRhythm(&sig)
 	out := s.field.Deposit(sig)
 	s.agents.Touch(sig.Agent)
+	s.metrics.recordDeposit(out)
 	s.emit("signal", out)
 	writeJSON(w, http.StatusOK, out)
 }
@@ -402,12 +411,17 @@ func (s *Server) handleClaim(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "agent and resource are required")
 		return
 	}
-	cl, won := s.claims.Acquire(req.Agent, req.Resource, time.Duration(req.TTLS*float64(time.Second)))
+	ttl := time.Duration(req.TTLS * float64(time.Second))
+	cl, won := s.claims.Acquire(req.Agent, req.Resource, ttl)
 	s.agents.Touch(req.Agent)
 	if !won {
 		writeJSON(w, http.StatusConflict, map[string]any{"granted": false, "held_by": cl})
 		return
 	}
+	if ttl <= 0 {
+		ttl = DefaultClaimTTL
+	}
+	s.metrics.recordClaim(req.Agent, req.Resource, ttl)
 	s.emit("claim", cl)
 	writeJSON(w, http.StatusOK, map[string]any{"granted": true, "claim": cl})
 }
@@ -419,6 +433,7 @@ func (s *Server) handleRelease(w http.ResponseWriter, r *http.Request) {
 	}
 	released := s.claims.Release(req.Agent, req.Resource)
 	if released {
+		s.metrics.recordRelease(req.Resource)
 		s.emit("release", map[string]string{"agent": req.Agent, "resource": req.Resource})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"released": released})

@@ -46,6 +46,9 @@ usage: wag <command> [args] [--flags]
   channels [list]       typed channels + the evidence-tier ladder
   replay <journal>      re-emit a journal's events to stdout for post-mortem
                           review (--speed events/sec, default 50)
+  attack-sim <scenario> run a red-team scenario against the field
+                          scenario: sybil | taboo-grief | lease-squat | all
+                          (needs waggled -debug; scriptable in CI)
   claim <resource>      acquire/renew an exclusive lease (--ttl SECS)
                           exit 0 granted, exit 3 held by another agent
   release <resource>    release a held lease
@@ -82,6 +85,7 @@ fn main() {
         "recall" => recall(&host, &pos, &flags),
         "channels" => get(&host, "/v1/channels"),
         "replay" => replay(&pos, &flags),
+        "attack-sim" => return attack_sim(&host, &pos),
         "claim" => claim(&host, &pos, &flags),
         "release" => release(&host, &pos, &flags),
         "claims" => get(&host, "/v1/claims"),
@@ -332,6 +336,134 @@ fn watch(host: &str) -> Out {
             pending.clear();
         }
     }
+}
+
+// ---- attack-sim: red-team scenarios (round 2, #1) ----------------------------
+//
+// Native Rust so red-team runs are scriptable in CI with real exit codes and
+// zero extra dependencies. Generates hostile traffic against the field, then
+// grades the defense by reading /v1/debug/attack-metrics (needs waggled
+// -debug). The richer scorer with detailed output lives in
+// sdk/redteam/redteam.py; this is the shell-native, exit-code-driven twin.
+//
+// Exit 0 = all requested defenses held; exit 1 = a defense failed or the
+// field/metrics were unreachable.
+fn attack_sim(host: &str, pos: &[String]) -> ! {
+    let scenario = pos.first().map(String::as_str).unwrap_or("all");
+    let scenarios: Vec<&str> = match scenario {
+        "all" => vec!["sybil", "taboo-grief", "lease-squat"],
+        s => vec![s],
+    };
+    // fail fast if -debug metrics aren't available
+    match request(host, "GET", "/v1/debug/attack-metrics", None) {
+        Ok((404, _)) => {
+            eprintln!("wag attack-sim: field not in -debug mode (no attack metrics). Start: waggled -debug");
+            exit(1);
+        }
+        Err(e) => {
+            eprintln!("wag attack-sim: {e}");
+            exit(1);
+        }
+        _ => {}
+    }
+    let mut passed = 0;
+    for s in &scenarios {
+        let ok = match *s {
+            "sybil" => sim_sybil(host),
+            "taboo-grief" => sim_taboo_grief(host),
+            "lease-squat" => sim_lease_squat(host),
+            other => {
+                eprintln!("wag attack-sim: unknown scenario '{other}'");
+                exit(64);
+            }
+        };
+        println!("  {:14} {}", s, if ok { "PASS" } else { "FAIL" });
+        if ok {
+            passed += 1;
+        }
+    }
+    println!("  {:14} {}/{} defenses held", "TOTAL", passed, scenarios.len());
+    exit(if passed == scenarios.len() { 0 } else { 1 });
+}
+
+fn reg(host: &str, id: &str) {
+    let mut b = JsonObj::new();
+    b.str("id", id);
+    b.str("name", id);
+    let _ = request(host, "POST", "/v1/agents", Some(&b.finish()));
+}
+
+fn dep(host: &str, agent: &str, resource: &str, kind: &str, intensity: f64, tier: &str) {
+    let mut b = JsonObj::new();
+    b.str("agent", agent);
+    b.str("resource", resource);
+    b.str("kind", kind);
+    b.raw("intensity", &intensity.to_string());
+    if !tier.is_empty() {
+        b.str("evidence_tier", tier);
+    }
+    let _ = request(host, "POST", "/v1/signals", Some(&b.finish()));
+}
+
+fn metrics(host: &str) -> String {
+    request(host, "GET", "/v1/debug/attack-metrics", None)
+        .map(|(_, body)| body)
+        .unwrap_or_default()
+}
+
+// Sybil: a ring of identities floods coordinated gold on a dead resource;
+// the defense should surface it as a suspected cluster.
+fn sim_sybil(host: &str) -> bool {
+    let trap = "repo://dead-end-trap";
+    for i in 0..8 {
+        let a = format!("sybil-{i}");
+        reg(host, &a);
+        dep(host, &a, trap, "gold", 9.0, "");
+    }
+    let m = metrics(host);
+    // the cluster report names the trap resource once a ring is detected
+    let clusters = m.split("\"suspected_clusters\"").nth(1).unwrap_or("");
+    clusters.contains(trap)
+}
+
+// Taboo griefing: an agent spams taboo to censor a legit path. Bare core does
+// not authenticate taboo (that's Èṣù's job), so a pass = the flood is at least
+// detected, quantifying the exposure the capability gate closes.
+fn sim_taboo_grief(host: &str) -> bool {
+    let path = "repo://legit-path";
+    reg(host, "honest-worker");
+    dep(host, "honest-worker", path, "gold", 8.0, "watch-derived");
+    reg(host, "griefer");
+    for _ in 0..12 {
+        dep(host, "griefer", path, "taboo", 10.0, "");
+    }
+    let m = metrics(host);
+    m.contains("griefer") || m.split("\"suspected_clusters\"").nth(1).unwrap_or("").contains("taboo")
+}
+
+// Lease squatting: claim and never release; expiry must reclaim within bound.
+fn sim_lease_squat(host: &str) -> bool {
+    reg(host, "squatter");
+    let ttl = 2.0;
+    for i in 0..4 {
+        let mut b = JsonObj::new();
+        b.str("agent", "squatter");
+        b.str("resource", &format!("task://contested-{i}"));
+        b.raw("ttl_s", &ttl.to_string());
+        let _ = request(host, "POST", "/v1/claims", Some(&b.finish()));
+    }
+    reg(host, "honest-claimant");
+    let mut b = JsonObj::new();
+    b.str("agent", "honest-claimant");
+    b.str("resource", "task://contested-0");
+    b.raw("ttl_s", &ttl.to_string());
+    let body = b.finish();
+    // while squatted, honest claim must be denied (409)
+    let denied = matches!(request(host, "POST", "/v1/claims", Some(&body)), Ok((409, _)));
+    // after expiry, honest claim must succeed
+    std::thread::sleep(std::time::Duration::from_secs_f64(ttl + 0.6));
+    let granted = matches!(request(host, "POST", "/v1/claims", Some(&body)), Ok((200, _)));
+    denied && granted
 }
 
 // ---- flag / arg parsing ------------------------------------------------------

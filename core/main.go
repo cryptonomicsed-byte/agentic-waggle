@@ -17,6 +17,7 @@ import (
 func main() {
 	addr := flag.String("addr", ":7777", "listen address")
 	dataDir := flag.String("data", "", "journal directory (empty = in-memory only)")
+	debug := flag.Bool("debug", false, "enable /v1/debug/attack-metrics for red-team scoring (off in production)")
 	flag.Parse()
 
 	store, err := OpenStore(*dataDir)
@@ -26,6 +27,10 @@ func main() {
 	defer store.Close()
 
 	srv := NewServer(store)
+	if *debug {
+		srv.EnableDebug()
+		log.Printf("waggled: -debug on — attack metrics at /v1/debug/attack-metrics")
+	}
 	if err := srv.replay(*dataDir); err != nil {
 		log.Fatalf("waggled: replay journal: %v", err)
 	}
