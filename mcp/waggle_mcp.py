@@ -27,7 +27,10 @@ DEFAULT_AGENT = os.environ.get("WAGGLE_AGENT", "")
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_INFO = {"name": "waggle", "version": "0.1.0"}
 
-KINDS = ["explored", "gold", "dead-end", "help", "warn", "handoff", "claimed", "heartbeat"]
+KINDS = ["explored", "gold", "dead-end", "help", "warn", "handoff", "claimed", "heartbeat",
+         "bounded", "taboo", "federation-health"]
+
+TIERS = ["self-report", "corroborated", "watch-derived", "zangbeto-verified", "on-chain-anchored"]
 
 AGENT_PARAM = {
     "type": "string",
@@ -65,8 +68,134 @@ TOOLS = [
                 "prefix": {"type": "string", "description": "Resource URI prefix."},
                 "kind": {"type": "string", "enum": KINDS},
                 "min": {"type": "number", "description": "Minimum current intensity."},
+                "min_tier": {"type": "string", "enum": TIERS, "description": "Minimum evidence tier — 'corroborated' drops unverified self-reports. Use before acting where bad scent is expensive."},
                 "limit": {"type": "integer"},
             },
+        },
+    },
+    {
+        "name": "waggle_sniff_batch",
+        "description": (
+            "Gradient rollups for many URIs in one call — price N candidate branches "
+            "for one round-trip when exploring depth-first. Each URI is a subtree prefix."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "uris": {"type": "array", "items": {"type": "string"}, "description": "Up to 256 URIs."},
+                "kind": {"type": "string", "enum": KINDS},
+                "weighted": {"type": "boolean", "description": "Trust-adjusted totals (evidence tier x cross-inhibition)."},
+            },
+            "required": ["uris"],
+        },
+    },
+    {
+        "name": "waggle_explain",
+        "description": (
+            "Why does this resource read the way it does? Every live signal with its "
+            "evidence-tier weight, the cross-inhibitions suppressing it (e.g. a taboo "
+            "or a fragile bounded verdict damping gold), effective intensity, and the "
+            "ambient diffusion from siblings. Use to debug a hotspot."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"resource": {"type": "string"}},
+            "required": ["resource"],
+        },
+    },
+    {
+        "name": "waggle_recall_at",
+        "description": (
+            "The field as it stood at a past instant (journal replay): sniff answers "
+            "'now', this answers 'then'. Compare with a live sniff to detect regressions "
+            "— e.g. a resource whose bounded verdict was robust then and fragile now. "
+            "Requires the substrate to run with persistence."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "at": {"type": "string", "description": "RFC3339 instant, e.g. 2026-07-11T12:00:00Z."},
+                "resource": {"type": "string"},
+                "prefix": {"type": "string"},
+                "kind": {"type": "string", "enum": KINDS},
+                "limit": {"type": "integer"},
+            },
+            "required": ["at"],
+        },
+    },
+    {
+        "name": "waggle_channels",
+        "description": "List typed channels (decay defaults, add/replace reinforcement, cross-inhibitions) and the evidence-tier ladder.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "waggle_channel_register",
+        "description": (
+            "Self-register a typed channel: teach the substrate a new signal type's decay "
+            "defaults, reinforcement semantics and cross-inhibitions. No source changes needed."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "doc": {"type": "string"},
+                "default_half_life_s": {"type": "number"},
+                "decay_kernel": {"type": "string", "enum": ["exp", "power"]},
+                "default_alpha": {"type": "number"},
+                "reinforce": {"type": "string", "enum": ["add", "replace"], "description": "'replace' = verdict semantics: re-deposits set the value instead of adding."},
+                "cross_inhibits": {"type": "array", "items": {"type": "object"}, "description": "[{channel, mode: 'high'|'low', ref, floor}]"},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "waggle_watch_register",
+        "description": (
+            "Register a derivation rule: state transitions POSTed to the returned ingest "
+            "path become deposits at watch-derived trust — systems signal by being "
+            "observed instead of calling mark."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "agent": AGENT_PARAM,
+                "name": {"type": "string"},
+                "resource_prefix": {"type": "string", "description": "Prepended to incoming resources."},
+                "map": {"type": "object", "description": "outcome->kind; default {success: gold, failure: dead-end}."},
+            },
+        },
+    },
+    {
+        "name": "waggle_watch_ingest",
+        "description": "Push one state transition to a registered watch; the derived signal is deposited and returned.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "watch_id": {"type": "string"},
+                "resource": {"type": "string"},
+                "outcome": {"type": "string", "description": "Translated via the watch's map (e.g. success/failure)."},
+                "kind": {"type": "string", "enum": KINDS, "description": "Or name the kind directly."},
+                "subtype": {"type": "string", "description": "Finer label, e.g. a compile stage."},
+                "intensity": {"type": "number"},
+                "note": {"type": "string"},
+            },
+            "required": ["watch_id", "resource"],
+        },
+    },
+    {
+        "name": "waggle_territory_set",
+        "description": (
+            "Tune the rhythm of a region (Ọya's heartbeat): deposits under the prefix "
+            "that omit half_life_s get tempo x the default. <1 = fast territory (live "
+            "trading), >1 = slow (ethics judgments)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "prefix": {"type": "string"},
+                "tempo": {"type": "number"},
+            },
+            "required": ["prefix", "tempo"],
         },
     },
     {
@@ -91,7 +220,10 @@ TOOLS = [
                     "description": "Decay kernel. 'exp' (default) forgets completely; 'power' is heavy-tailed — halves at one half-life but fades to background instead of nothing. Use for durable findings (gold, warn).",
                 },
                 "alpha": {"type": "number", "description": "Power-law exponent, default 1. Higher = faster tail."},
+                "subtype": {"type": "string", "description": "Finer label within a channel (e.g. a compile stage)."},
+                "evidence_tier": {"type": "string", "enum": TIERS, "description": "Trust ladder position, default self-report. Higher tiers come from instruments (watches, verification), not assertions."},
                 "note": {"type": "string", "description": "Free text for whoever sniffs this later."},
+                "meta": {"type": "object", "description": "String map, e.g. a bounded verdict's {escape, maxiter, verdict} or a taboo's justification trace."},
             },
             "required": ["resource", "kind"],
         },
@@ -112,6 +244,8 @@ TOOLS = [
                 "kind": {"type": "string", "enum": KINDS},
                 "k": {"type": "integer", "description": "Top-k hotspots, default 20."},
                 "depth": {"type": "integer", "description": "Roll signals up to this URI-tree level (0=scheme, 1=first path segment, ...). Omit for individual resources."},
+                "weighted": {"type": "boolean", "description": "Trust-adjusted totals: evidence tier x cross-inhibition."},
+                "diffuse": {"type": "boolean", "description": "Leaf level: add 5% sibling bleed so hot neighborhoods warm unmarked resources."},
             },
         },
     },
@@ -242,7 +376,33 @@ def call_tool(name, args):
         body["agent"] = need_agent(args)
         return http("POST", "/v1/signals", body=body)
     if name == "waggle_gradient":
-        return http("GET", "/v1/gradient", params=args)
+        params = dict(args)
+        for flag in ("weighted", "diffuse"):
+            if params.get(flag):
+                params[flag] = "1"
+            else:
+                params.pop(flag, None)
+        return http("GET", "/v1/gradient", params=params)
+    if name == "waggle_sniff_batch":
+        return http("POST", "/v1/sniff/batch", body=args)
+    if name == "waggle_explain":
+        return http("GET", "/v1/explain", params=args)
+    if name == "waggle_recall_at":
+        return http("GET", "/v1/recall", params=args)
+    if name == "waggle_channels":
+        return http("GET", "/v1/channels")
+    if name == "waggle_channel_register":
+        return http("POST", "/v1/channels", body=args)
+    if name == "waggle_watch_register":
+        body = dict(args)
+        body["agent"] = need_agent(args)
+        return http("POST", "/v1/watches", body=body)
+    if name == "waggle_watch_ingest":
+        body = dict(args)
+        watch_id = body.pop("watch_id")
+        return http("POST", f"/v1/ingest/{watch_id}", body=body)
+    if name == "waggle_territory_set":
+        return http("POST", "/v1/territories", body=args)
     if name == "waggle_claim":
         return http("POST", "/v1/claims", body={
             "agent": need_agent(args), "resource": args["resource"],

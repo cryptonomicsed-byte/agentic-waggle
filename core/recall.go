@@ -1,0 +1,80 @@
+package main
+
+import (
+	"encoding/json"
+	"errors"
+	"sort"
+	"strings"
+	"time"
+)
+
+// ErrNoJournal is returned when recall is asked of a substrate running
+// without persistence — there is no history to consult.
+var ErrNoJournal = errors.New("recall requires a journal (start waggled with -data)")
+
+// RecallAt reconstructs the field's state as it stood at a past instant, by
+// replaying the journal up to that time. It is the second read path into the
+// journal: sniff answers "what does the field say now", recall answers "what
+// did it say then". Because reinforcements are journaled as merged results, a
+// later entry for the same (agent, resource, kind) supersedes earlier ones —
+// the same rule boot replay uses.
+//
+// Intensities are decayed to the recall instant, not to now: recall ignores
+// live decay, not the decay physics of the moment being asked about.
+func RecallAt(dir string, at time.Time, q SniffQuery) ([]Signal, error) {
+	if dir == "" {
+		return nil, ErrNoJournal
+	}
+	type key struct{ agent, resource, kind string }
+	last := make(map[key]Signal)
+
+	err := Replay(dir, func(typ string, data json.RawMessage) error {
+		if typ != "signal" {
+			return nil
+		}
+		var sig Signal
+		if err := json.Unmarshal(data, &sig); err != nil {
+			return err
+		}
+		if sig.DepositedAt.After(at) {
+			return nil
+		}
+		if q.Resource != "" && sig.Resource != q.Resource {
+			return nil
+		}
+		if q.Prefix != "" && !strings.HasPrefix(sig.Resource, q.Prefix) {
+			return nil
+		}
+		if q.Kind != "" && sig.Kind != q.Kind {
+			return nil
+		}
+		if q.Agent != "" && sig.Agent != q.Agent {
+			return nil
+		}
+		last[key{sig.Agent, sig.Resource, sig.Kind}] = sig
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	limit := q.Limit
+	if limit <= 0 {
+		limit = 200
+	}
+	out := make([]Signal, 0, len(last))
+	for _, sig := range last {
+		cur := sig.At(at)
+		if cur < q.Min { // recall has no implicit evaporation floor: history includes the faded
+			continue
+		}
+		snap := sig
+		snap.Intensity = cur
+		out = append(out, snap)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Intensity > out[j].Intensity })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}

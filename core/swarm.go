@@ -12,13 +12,20 @@ import (
 // Profile is an agent's persistent identity on the substrate: who it is, what
 // it wants, what it can do, and where its private memory lives.
 type Profile struct {
-	ID              string    `json:"id"`
-	Name            string    `json:"name"`
-	Goals           []string  `json:"goals,omitempty"`
-	Skills          []string  `json:"skills,omitempty"`
-	MemoryNamespace string    `json:"memory_namespace"`
-	RegisteredAt    time.Time `json:"registered_at"`
-	LastSeen        time.Time `json:"last_seen"`
+	ID     string   `json:"id"`
+	Name   string   `json:"name"`
+	Goals  []string `json:"goals,omitempty"`
+	Skills []string `json:"skills,omitempty"`
+	// ResponseThresholds tune stigmergic sensitivity per signal kind: an
+	// agent ignores signals of a kind below its threshold. Different
+	// thresholds across a swarm produce division of labor without
+	// assignment — the classic response-threshold model from social
+	// insects. Enforced client-side; stored here so it survives restarts
+	// and is visible to the swarm.
+	ResponseThresholds map[string]float64 `json:"response_thresholds,omitempty"`
+	MemoryNamespace    string             `json:"memory_namespace"`
+	RegisteredAt       time.Time          `json:"registered_at"`
+	LastSeen           time.Time          `json:"last_seen"`
 }
 
 type Registry struct {
@@ -52,6 +59,9 @@ func (r *Registry) Register(p Profile) Profile {
 		}
 		if len(p.Skills) == 0 {
 			p.Skills = prev.Skills
+		}
+		if len(p.ResponseThresholds) == 0 {
+			p.ResponseThresholds = prev.ResponseThresholds
 		}
 	} else {
 		p.RegisteredAt = now
@@ -107,10 +117,44 @@ type Claims struct {
 	mu    sync.Mutex
 	byRes map[string]*Claim
 	clock func() time.Time
+	// recent acquire times per depth-1 territory, for claim-velocity-derived
+	// evaporation: busy territory decays faster, so defaults shorten there
+	recent map[string][]time.Time
 }
 
 func NewClaims() *Claims {
-	return &Claims{byRes: make(map[string]*Claim), clock: time.Now}
+	return &Claims{byRes: make(map[string]*Claim), clock: time.Now, recent: make(map[string][]time.Time)}
+}
+
+// velocityWindow bounds how far back claim velocity looks.
+const velocityWindow = 10 * time.Minute
+
+// Velocity reports how many leases were acquired under a territory (depth-1
+// prefix) within the recent window. This is the lease-tracking data the
+// dynamic-evaporation multiplier reuses — no new bookkeeping, just a second
+// read of what claims already record.
+func (c *Claims) Velocity(territory string) int {
+	now := c.clock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	times := c.recent[territory]
+	kept := times[:0]
+	for _, t := range times {
+		if now.Sub(t) <= velocityWindow {
+			kept = append(kept, t)
+		}
+	}
+	c.recent[territory] = kept
+	return len(kept)
+}
+
+func (c *Claims) recordVelocity(resource string, at time.Time) {
+	territory := prefixAt(resource, 1)
+	times := append(c.recent[territory], at)
+	if len(times) > 256 {
+		times = times[len(times)-256:]
+	}
+	c.recent[territory] = times
 }
 
 const DefaultClaimTTL = 300 * time.Second
@@ -133,6 +177,7 @@ func (c *Claims) Acquire(agent, resource string, ttl time.Duration) (Claim, bool
 		cl.ClaimedAt = cur.ClaimedAt
 	}
 	c.byRes[resource] = cl
+	c.recordVelocity(resource, now)
 	return *cl, true
 }
 
@@ -234,6 +279,63 @@ func (d *DanceFloor) Since(since uint64, topic string, limit int) []Dance {
 			break
 		}
 	}
+	return out
+}
+
+// ---- Territories (Ọya's heartbeat) -------------------------------------------
+
+// Territory tunes the rhythm of a region of the URI tree: tempo scales the
+// default half-life applied to deposits under the prefix. Fast-moving
+// territory (a live trading book) runs tempo < 1 so stale scent clears
+// quickly; slow territory (ethics judgments) runs tempo > 1 so knowledge
+// lingers. The adjustment happens at deposit time, so every signal remains a
+// pure function of its own record — journal replay is untouched.
+type Territory struct {
+	Prefix string  `json:"prefix"`
+	Tempo  float64 `json:"tempo"`
+}
+
+type Territories struct {
+	mu       sync.RWMutex
+	byPrefix map[string]float64
+}
+
+func NewTerritories() *Territories {
+	return &Territories{byPrefix: make(map[string]float64)}
+}
+
+func (t *Territories) Set(prefix string, tempo float64) Territory {
+	if tempo <= 0 {
+		tempo = 1
+	}
+	t.mu.Lock()
+	t.byPrefix[prefix] = tempo
+	t.mu.Unlock()
+	return Territory{Prefix: prefix, Tempo: tempo}
+}
+
+// Tempo returns the multiplier of the longest registered prefix covering the
+// resource, or 1 when no territory claims it.
+func (t *Territories) Tempo(resource string) float64 {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	best, tempo := -1, 1.0
+	for p, m := range t.byPrefix {
+		if len(p) > best && len(p) <= len(resource) && resource[:len(p)] == p {
+			best, tempo = len(p), m
+		}
+	}
+	return tempo
+}
+
+func (t *Territories) List() []Territory {
+	t.mu.RLock()
+	out := make([]Territory, 0, len(t.byPrefix))
+	for p, m := range t.byPrefix {
+		out = append(out, Territory{Prefix: p, Tempo: m})
+	}
+	t.mu.RUnlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].Prefix < out[j].Prefix })
 	return out
 }
 

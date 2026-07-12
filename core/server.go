@@ -18,28 +18,33 @@ var webFS embed.FS
 // manifest, so any agent that can make an HTTP request can discover and use
 // the whole surface without human-written glue.
 type Server struct {
-	field  *Field
-	agents *Registry
-	claims *Claims
-	floor  *DanceFloor
-	memory *Memory
-	hub    *Hub
-	store  *Store
-	mux    *http.ServeMux
-	start  time.Time
+	field       *Field
+	agents      *Registry
+	claims      *Claims
+	floor       *DanceFloor
+	memory      *Memory
+	watches     *Watches
+	territories *Territories
+	hub         *Hub
+	store       *Store
+	mux         *http.ServeMux
+	start       time.Time
+	dataDir     string // journal directory; recall needs it ("" = no persistence)
 }
 
 func NewServer(store *Store) *Server {
 	s := &Server{
-		field:  NewField(),
-		agents: NewRegistry(),
-		claims: NewClaims(),
-		floor:  NewDanceFloor(1000),
-		memory: NewMemory(),
-		hub:    NewHub(),
-		store:  store,
-		mux:    http.NewServeMux(),
-		start:  time.Now(),
+		field:       NewField(),
+		agents:      NewRegistry(),
+		claims:      NewClaims(),
+		floor:       NewDanceFloor(1000),
+		memory:      NewMemory(),
+		watches:     NewWatches(),
+		territories: NewTerritories(),
+		hub:         NewHub(),
+		store:       store,
+		mux:         http.NewServeMux(),
+		start:       time.Now(),
 	}
 	s.routes()
 	return s
@@ -58,7 +63,20 @@ func (s *Server) routes() {
 
 	m.HandleFunc("POST /v1/signals", s.handleDeposit)
 	m.HandleFunc("GET /v1/sniff", s.handleSniff)
+	m.HandleFunc("POST /v1/sniff/batch", s.handleSniffBatch)
 	m.HandleFunc("GET /v1/gradient", s.handleGradient)
+	m.HandleFunc("GET /v1/explain", s.handleExplain)
+	m.HandleFunc("GET /v1/recall", s.handleRecall)
+
+	m.HandleFunc("GET /v1/channels", s.handleChannels)
+	m.HandleFunc("POST /v1/channels", s.handleChannelRegister)
+
+	m.HandleFunc("POST /v1/watches", s.handleWatchRegister)
+	m.HandleFunc("GET /v1/watches", s.handleWatches)
+	m.HandleFunc("POST /v1/ingest/{id}", s.handleIngest)
+
+	m.HandleFunc("POST /v1/territories", s.handleTerritorySet)
+	m.HandleFunc("GET /v1/territories", s.handleTerritories)
 
 	m.HandleFunc("POST /v1/claims", s.handleClaim)
 	m.HandleFunc("POST /v1/claims/release", s.handleRelease)
@@ -138,10 +156,36 @@ func (s *Server) handleDeposit(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "agent, resource and kind are required")
 		return
 	}
+	s.applyRhythm(&sig)
 	out := s.field.Deposit(sig)
 	s.agents.Touch(sig.Agent)
 	s.emit("signal", out)
 	writeJSON(w, http.StatusOK, out)
+}
+
+// applyRhythm resolves the default half-life for a deposit that omitted one,
+// folding in the territory tempo (Ọya's heartbeat) and the claim-velocity
+// evaporation multiplier: contested territory decays up to twice as fast.
+// The adjustment happens before the deposit is journaled, so replayed decay
+// is a pure function of the stored record.
+func (s *Server) applyRhythm(sig *Signal) {
+	if sig.HalfLifeS > 0 {
+		return // an explicit half-life is always honored
+	}
+	base := float64(DefaultHalfLifeS)
+	if ch, ok := s.field.channelOf(sig.Kind); ok && ch.DefaultHalfLifeS > 0 {
+		base = ch.DefaultHalfLifeS
+	}
+	tempo := s.territories.Tempo(sig.Resource)
+	velocity := s.claims.Velocity(prefixAt(sig.Resource, 1))
+	if velocity > 20 {
+		velocity = 20
+	}
+	speedup := 1 + float64(velocity)/20 // 20 claims in 10 min halves the half-life
+	if tempo == 1 && speedup == 1 {
+		return // untouched: let the field apply its own defaults
+	}
+	sig.HalfLifeS = base * tempo / speedup
 }
 
 func (s *Server) handleSniff(w http.ResponseWriter, r *http.Request) {
@@ -154,12 +198,171 @@ func (s *Server) handleSniff(w http.ResponseWriter, r *http.Request) {
 		Kind:     q.Get("kind"),
 		Agent:    q.Get("agent"),
 		Min:      min,
+		MinTier:  q.Get("min_tier"),
 		Limit:    limit,
 	})
 	if sigs == nil {
 		sigs = []Signal{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"signals": sigs})
+}
+
+type batchSniffReq struct {
+	URIs     []string `json:"uris"`
+	Kind     string   `json:"kind,omitempty"`
+	Weighted bool     `json:"weighted,omitempty"`
+}
+
+func (s *Server) handleSniffBatch(w http.ResponseWriter, r *http.Request) {
+	req, ok := decode[batchSniffReq](w, r)
+	if !ok {
+		return
+	}
+	if len(req.URIs) == 0 {
+		writeErr(w, http.StatusBadRequest, "uris is required")
+		return
+	}
+	if len(req.URIs) > 256 {
+		writeErr(w, http.StatusBadRequest, "at most 256 uris per batch")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"results": s.field.BatchRollup(req.URIs, req.Kind, req.Weighted),
+	})
+}
+
+func (s *Server) handleExplain(w http.ResponseWriter, r *http.Request) {
+	resource := r.URL.Query().Get("resource")
+	if resource == "" {
+		writeErr(w, http.StatusBadRequest, "resource is required")
+		return
+	}
+	ex := s.field.Explain(resource)
+	if ex.Contributions == nil {
+		ex.Contributions = []Contribution{}
+	}
+	writeJSON(w, http.StatusOK, ex)
+}
+
+func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	atStr := q.Get("at")
+	if atStr == "" {
+		writeErr(w, http.StatusBadRequest, "at is required (RFC3339 timestamp)")
+		return
+	}
+	at, err := time.Parse(time.RFC3339, atStr)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "at must be RFC3339: "+err.Error())
+		return
+	}
+	min, _ := strconv.ParseFloat(q.Get("min"), 64)
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	sigs, err := RecallAt(s.dataDir, at, SniffQuery{
+		Resource: q.Get("resource"),
+		Prefix:   q.Get("prefix"),
+		Kind:     q.Get("kind"),
+		Agent:    q.Get("agent"),
+		Min:      min,
+		Limit:    limit,
+	})
+	if err == ErrNoJournal {
+		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if sigs == nil {
+		sigs = []Signal{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"at": at, "signals": sigs})
+}
+
+// ---- channels -----------------------------------------------------------------
+
+func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"channels":       s.field.channels.List(),
+		"evidence_tiers": EvidenceTiers,
+	})
+}
+
+func (s *Server) handleChannelRegister(w http.ResponseWriter, r *http.Request) {
+	ch, ok := decode[Channel](w, r)
+	if !ok {
+		return
+	}
+	if ch.Name == "" {
+		writeErr(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	out := s.field.channels.Register(ch)
+	s.emit("channel", out)
+	writeJSON(w, http.StatusOK, out)
+}
+
+// ---- watches -----------------------------------------------------------------
+
+func (s *Server) handleWatchRegister(w http.ResponseWriter, r *http.Request) {
+	wt, ok := decode[Watch](w, r)
+	if !ok {
+		return
+	}
+	if wt.Agent == "" {
+		writeErr(w, http.StatusBadRequest, "agent is required")
+		return
+	}
+	out := s.watches.Register(wt)
+	s.emit("watch", out)
+	writeJSON(w, http.StatusOK, map[string]any{"watch": out, "ingest_path": "/v1/ingest/" + out.ID})
+}
+
+func (s *Server) handleWatches(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"watches": s.watches.List()})
+}
+
+func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
+	wt, found := s.watches.Get(r.PathValue("id"))
+	if !found {
+		writeErr(w, http.StatusNotFound, "unknown watch")
+		return
+	}
+	ev, ok := decode[WatchEvent](w, r)
+	if !ok {
+		return
+	}
+	sig, ok := wt.Derive(ev)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "event needs a resource and either a kind or a mapped outcome")
+		return
+	}
+	s.applyRhythm(&sig)
+	out := s.field.Deposit(sig)
+	s.watches.touch(wt.ID)
+	s.emit("signal", out)
+	writeJSON(w, http.StatusOK, out)
+}
+
+// ---- territories ----------------------------------------------------------------
+
+func (s *Server) handleTerritorySet(w http.ResponseWriter, r *http.Request) {
+	t, ok := decode[Territory](w, r)
+	if !ok {
+		return
+	}
+	if t.Prefix == "" {
+		writeErr(w, http.StatusBadRequest, "prefix is required")
+		return
+	}
+	out := s.territories.Set(t.Prefix, t.Tempo)
+	s.emit("territory", out)
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) handleTerritories(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"territories": s.territories.List()})
 }
 
 func (s *Server) handleGradient(w http.ResponseWriter, r *http.Request) {
@@ -171,7 +374,9 @@ func (s *Server) handleGradient(w http.ResponseWriter, r *http.Request) {
 			depth = n
 		}
 	}
-	hs := s.field.Gradient(q.Get("prefix"), q.Get("kind"), k, depth)
+	weighted := q.Get("weighted") == "1" || q.Get("weighted") == "true"
+	diffuse := q.Get("diffuse") == "1" || q.Get("diffuse") == "true"
+	hs := s.field.GradientOpts(q.Get("prefix"), q.Get("kind"), k, depth, weighted, diffuse)
 	if hs == nil {
 		hs = []Hotspot{}
 	}
@@ -384,8 +589,27 @@ func (s *Server) handleObservatory(w http.ResponseWriter, r *http.Request) {
 // replay rebuilds state from the journal. Signal deposits are replayed with
 // their original timestamps so decay is preserved across restarts.
 func (s *Server) replay(dir string) error {
+	s.dataDir = dir
 	return Replay(dir, func(typ string, data json.RawMessage) error {
 		switch typ {
+		case "channel":
+			var ch Channel
+			if err := json.Unmarshal(data, &ch); err != nil {
+				return err
+			}
+			s.field.channels.Register(ch)
+		case "watch":
+			var wt Watch
+			if err := json.Unmarshal(data, &wt); err != nil {
+				return err
+			}
+			s.watches.Register(wt)
+		case "territory":
+			var t Territory
+			if err := json.Unmarshal(data, &t); err != nil {
+				return err
+			}
+			s.territories.Set(t.Prefix, t.Tempo)
 		case "agent":
 			var p Profile
 			if err := json.Unmarshal(data, &p); err != nil {

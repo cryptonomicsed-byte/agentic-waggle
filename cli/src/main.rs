@@ -25,12 +25,27 @@ usage: wag <command> [args] [--flags]
                           --intensity N --half-life SECS --note TEXT
                           --decay exp|power (power = heavy tail: fades to
                           background, not to nothing) --alpha N
+                          --subtype S --tier self-report|corroborated|
+                          watch-derived|zangbeto-verified|on-chain-anchored
   sniff                 read the field
-                          --resource URI | --prefix URI [--kind K] [--min N] [--limit N]
+                          --resource URI | --prefix URI [--kind K] [--min N]
+                          [--min-tier T  drop signals below an evidence tier]
+                          [--limit N]
+  batch <uri> [uri...]  gradient rollups for many URIs in one call
+                          [--kind K] [--weighted]
   gradient              ranked hotspots: where is the swarm's attention?
                           [--prefix URI] [--kind K] [--k N]
                           [--depth N]  roll up to URI-tree level N and zoom
                           in coarse-to-fine (0=scheme, 1=first segment, ...)
+                          [--weighted  trust-adjusted totals]
+                          [--diffuse   5% sibling bleed at leaf level]
+  explain <resource>    why does this resource read the way it does:
+                          tier weights, cross-inhibitions, diffusion
+  recall <resource>     the field as it stood at a past instant
+                          --at RFC3339 [--prefix] (needs waggled -data)
+  channels [list]       typed channels + the evidence-tier ladder
+  replay <journal>      re-emit a journal's events to stdout for post-mortem
+                          review (--speed events/sec, default 50)
   claim <resource>      acquire/renew an exclusive lease (--ttl SECS)
                           exit 0 granted, exit 3 held by another agent
   release <resource>    release a held lease
@@ -60,8 +75,13 @@ fn main() {
     let result = match argv[0].as_str() {
         "register" => register(&host, &flags),
         "mark" => mark(&host, &pos, &flags),
-        "sniff" => get(&host, &format!("/v1/sniff{}", query(&flags, &[("resource", "resource"), ("prefix", "prefix"), ("kind", "kind"), ("agent", "agent"), ("min", "min"), ("limit", "limit")]))),
-        "gradient" => get(&host, &format!("/v1/gradient{}", query(&flags, &[("prefix", "prefix"), ("kind", "kind"), ("k", "k"), ("depth", "depth")]))),
+        "sniff" => get(&host, &format!("/v1/sniff{}", query(&flags, &[("resource", "resource"), ("prefix", "prefix"), ("kind", "kind"), ("agent", "agent"), ("min", "min"), ("min-tier", "min_tier"), ("limit", "limit")]))),
+        "batch" => batch(&host, &pos, &flags),
+        "gradient" => get(&host, &format!("/v1/gradient{}", query(&flags, &[("prefix", "prefix"), ("kind", "kind"), ("k", "k"), ("depth", "depth"), ("weighted", "weighted"), ("diffuse", "diffuse")]))),
+        "explain" => explain(&host, &pos),
+        "recall" => recall(&host, &pos, &flags),
+        "channels" => get(&host, "/v1/channels"),
+        "replay" => replay(&pos, &flags),
         "claim" => claim(&host, &pos, &flags),
         "release" => release(&host, &pos, &flags),
         "claims" => get(&host, "/v1/claims"),
@@ -151,10 +171,81 @@ fn mark(host: &str, pos: &[String], flags: &Flags) -> Out {
     if let Some(v) = flags.get("alpha") {
         body.raw("alpha", &num(v, "--alpha")?);
     }
+    if let Some(s) = flags.get("subtype") {
+        body.str("subtype", s);
+    }
+    if let Some(t) = flags.get("tier") {
+        body.str("evidence_tier", t);
+    }
     if let Some(n) = flags.get("note") {
         body.str("note", n);
     }
     request(host, "POST", "/v1/signals", Some(&body.finish()))
+}
+
+fn batch(host: &str, pos: &[String], flags: &Flags) -> Out {
+    if pos.is_empty() {
+        return Err("usage: wag batch <uri> [uri...] [--kind K] [--weighted]".into());
+    }
+    let mut body = JsonObj::new();
+    body.str_array("uris", pos.iter().map(String::as_str));
+    if let Some(k) = flags.get("kind") {
+        body.str("kind", k);
+    }
+    if flags.contains_key("weighted") {
+        body.raw("weighted", "true");
+    }
+    request(host, "POST", "/v1/sniff/batch", Some(&body.finish()))
+}
+
+fn explain(host: &str, pos: &[String]) -> Out {
+    let [resource] = one(pos, "explain <resource>")?;
+    get(host, &format!("/v1/explain?resource={}", urlenc(resource)))
+}
+
+fn recall(host: &str, pos: &[String], flags: &Flags) -> Out {
+    let at = flags
+        .get("at")
+        .ok_or("recall needs --at <RFC3339 instant>")?;
+    let mut q = format!("/v1/recall?at={}", urlenc(at));
+    if let Some(p) = flags.get("prefix") {
+        q.push_str(&format!("&prefix={}", urlenc(p)));
+    } else {
+        let [resource] = one(pos, "recall <resource> --at <instant>")?;
+        q.push_str(&format!("&resource={}", urlenc(resource)));
+    }
+    if let Some(k) = flags.get("kind") {
+        q.push_str(&format!("&kind={}", urlenc(k)));
+    }
+    get(host, &q)
+}
+
+/// replay re-emits a journal's entries to stdout at a steady pace, so a human
+/// (or a downstream pipe, e.g. into an Observatory feed) can review how a
+/// hotspot formed after the fact. Pure client-side: reads the JSONL file the
+/// daemon wrote, no server involvement.
+fn replay(pos: &[String], flags: &Flags) -> Out {
+    let [path] = one(pos, "replay <journal.jsonl> [--speed events/sec]")?;
+    let speed: f64 = flags
+        .get("speed")
+        .map(|v| v.parse().map_err(|_| format!("--speed expects a number, got '{v}'")))
+        .transpose()?
+        .unwrap_or(50.0);
+    if speed <= 0.0 {
+        return Err("--speed must be positive".into());
+    }
+    let data = std::fs::read_to_string(path).map_err(|e| format!("read {path}: {e}"))?;
+    let pause = std::time::Duration::from_secs_f64(1.0 / speed);
+    let mut stdout = std::io::stdout();
+    for line in data.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        writeln!(stdout, "{line}").map_err(|e| e.to_string())?;
+        stdout.flush().ok();
+        std::thread::sleep(pause);
+    }
+    Ok((200, String::new()))
 }
 
 fn claim(host: &str, pos: &[String], flags: &Flags) -> Out {
