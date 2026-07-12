@@ -1,0 +1,202 @@
+{
+  "decay": {
+    "cases": [
+      {
+        "Intensity": 4,
+        "HalfLife": 60,
+        "Age": 0,
+        "Decay": "",
+        "Alpha": 0,
+        "Expected": 4
+      },
+      {
+        "Intensity": 4,
+        "HalfLife": 60,
+        "Age": 60,
+        "Decay": "",
+        "Alpha": 0,
+        "Expected": 2
+      },
+      {
+        "Intensity": 4,
+        "HalfLife": 60,
+        "Age": 120,
+        "Decay": "",
+        "Alpha": 0,
+        "Expected": 1
+      },
+      {
+        "Intensity": 4,
+        "HalfLife": 60,
+        "Age": 600,
+        "Decay": "",
+        "Alpha": 0,
+        "Expected": 0.00390625
+      },
+      {
+        "Intensity": 4,
+        "HalfLife": 60,
+        "Age": 0,
+        "Decay": "power",
+        "Alpha": 1,
+        "Expected": 4
+      },
+      {
+        "Intensity": 4,
+        "HalfLife": 60,
+        "Age": 60,
+        "Decay": "power",
+        "Alpha": 1,
+        "Expected": 2
+      },
+      {
+        "Intensity": 4,
+        "HalfLife": 60,
+        "Age": 600,
+        "Decay": "power",
+        "Alpha": 1,
+        "Expected": 0.36363636363636365
+      },
+      {
+        "Intensity": 8,
+        "HalfLife": 7200,
+        "Age": 7200,
+        "Decay": "power",
+        "Alpha": 0.8,
+        "Expected": 4
+      },
+      {
+        "Intensity": 8,
+        "HalfLife": 7200,
+        "Age": 72000,
+        "Decay": "power",
+        "Alpha": 0.8,
+        "Expected": 0.9273700794081211
+      },
+      {
+        "Intensity": 10,
+        "HalfLife": 1800,
+        "Age": 3600,
+        "Decay": "power",
+        "Alpha": 2,
+        "Expected": 2.9911947447943628
+      },
+      {
+        "Intensity": 2,
+        "HalfLife": 300,
+        "Age": 300,
+        "Decay": "power",
+        "Alpha": 0.5,
+        "Expected": 1
+      }
+    ],
+    "description": "decay kernels: exponential and power-law, halving at one half-life"
+  },
+  "description": "waggle/v1 conformance vectors — pure kernel outputs pinned to 1e-9. See docs/SPEC/waggle-v1.md §12.",
+  "effective": {
+    "cases": [
+      {
+        "Decayed": 8,
+        "TierWeight": 0.6,
+        "Inhibition": 0.25,
+        "Expected": 1.2
+      },
+      {
+        "Decayed": 5,
+        "TierWeight": 1,
+        "Inhibition": 1,
+        "Expected": 5
+      },
+      {
+        "Decayed": 6,
+        "TierWeight": 0.2,
+        "Inhibition": 0.1,
+        "Expected": 0.12000000000000002
+      }
+    ],
+    "description": "effective = decayed * tier_weight * inhibition"
+  },
+  "inhibition": {
+    "cases": [
+      {
+        "Mode": "low",
+        "Inhibitor": 1,
+        "Ref": 0.5,
+        "Floor": 0.25,
+        "Expected": 0.25
+      },
+      {
+        "Mode": "low",
+        "Inhibitor": 9,
+        "Ref": 0.5,
+        "Floor": 0.25,
+        "Expected": 1
+      },
+      {
+        "Mode": "low",
+        "Inhibitor": 5,
+        "Ref": 0.5,
+        "Floor": 0.25,
+        "Expected": 1
+      },
+      {
+        "Mode": "high",
+        "Inhibitor": 9,
+        "Ref": 0,
+        "Floor": 0.1,
+        "Expected": 0.1
+      },
+      {
+        "Mode": "high",
+        "Inhibitor": 3,
+        "Ref": 0,
+        "Floor": 0.1,
+        "Expected": 0.7
+      },
+      {
+        "Mode": "high",
+        "Inhibitor": 10,
+        "Ref": 0,
+        "Floor": 0.25,
+        "Expected": 0.25
+      }
+    ],
+    "description": "cross-inhibition multipliers, high (taboo) and low (bounded/dead-cat) modes"
+  },
+  "tiers": {
+    "cases": [
+      {
+        "Tier": "self-report",
+        "Weight": 0.2,
+        "Rank": 0
+      },
+      {
+        "Tier": "corroborated",
+        "Weight": 0.4,
+        "Rank": 1
+      },
+      {
+        "Tier": "watch-derived",
+        "Weight": 0.6,
+        "Rank": 2
+      },
+      {
+        "Tier": "zangbeto-verified",
+        "Weight": 0.8,
+        "Rank": 3
+      },
+      {
+        "Tier": "on-chain-anchored",
+        "Weight": 1,
+        "Rank": 4
+      },
+      {
+        "Tier": "bogus",
+        "Weight": 0.2,
+        "Rank": 0
+      }
+    ],
+    "description": "evidence-tier weights and ranks"
+  },
+  "version": "1.0.0"
+}

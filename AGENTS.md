@@ -92,3 +92,12 @@ regardless of how many resources exist.
 - If you extend the API: update `core/manifest.go` (agents discover the API
   from it), `docs/PROTOCOL.md`, the CLI, the MCP tools, and the SDK together.
   A capability that isn't in the manifest doesn't exist.
+- **The frozen contract is `docs/SPEC/waggle-v1.md`** (semver, versioned
+  independently of any implementation). `docs/PROTOCOL.md` is the readable
+  tour; the manifest is the runtime truth; the spec is what a re-implementation
+  in another language conforms to. Changing observable protocol behavior means
+  bumping the spec version and updating the conformance vectors in
+  `docs/SPEC/vectors/` (checked by `core/conformance_test.go`).
+- The decay/inhibition/diffusion math is a pure package, `core/kernel/`,
+  verified three ways (`core/verify/README.md`): property tests, a Lean spec,
+  and a Julia cross-check. Change the math there, not inline in `field.go`.
