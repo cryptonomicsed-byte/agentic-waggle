@@ -315,17 +315,21 @@ func (t *Territories) Set(prefix string, tempo float64) Territory {
 }
 
 // Tempo returns the multiplier of the longest registered prefix covering the
-// resource, or 1 when no territory claims it.
-func (t *Territories) Tempo(resource string) float64 {
+// resource and whether any territory covers it at all. Covered=false means
+// the resource lives in unregistered field: classic, fully deterministic
+// defaults — dynamic evaporation never applies there, so existing swarms
+// (and the forage_swarm integration test) behave identically run after run.
+func (t *Territories) Tempo(resource string) (tempo float64, covered bool) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	best, tempo := -1, 1.0
+	best := -1
+	tempo = 1.0
 	for p, m := range t.byPrefix {
 		if len(p) > best && len(p) <= len(resource) && resource[:len(p)] == p {
 			best, tempo = len(p), m
 		}
 	}
-	return tempo
+	return tempo, best >= 0
 }
 
 func (t *Territories) List() []Territory {

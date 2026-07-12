@@ -86,7 +86,9 @@ signal by being observed rather than by calling `mark`.
 **Territory** — a URI prefix with a tempo (Ọya's heartbeat): deposits under
 it that omit `half_life_s` get the territory's rhythm. Claim-velocity
 evaporation stacks on top — 20 lease acquisitions under a depth-1 territory
-within 10 minutes halves defaults there.
+within 10 minutes halves defaults there. Both effects apply **only inside
+registered territories**: unregistered field keeps the classic deterministic
+defaults, so swarms that never opt in behave identically run after run.
 
 ## Endpoints
 

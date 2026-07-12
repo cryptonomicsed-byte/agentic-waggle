@@ -164,27 +164,29 @@ func (s *Server) handleDeposit(w http.ResponseWriter, r *http.Request) {
 }
 
 // applyRhythm resolves the default half-life for a deposit that omitted one,
-// folding in the territory tempo (Ọya's heartbeat) and the claim-velocity
-// evaporation multiplier: contested territory decays up to twice as fast.
-// The adjustment happens before the deposit is journaled, so replayed decay
-// is a pure function of the stored record.
+// folding in the territory tempo (Ọya's heartbeat) and — inside registered
+// territories only — the claim-velocity evaporation multiplier: contested
+// territory decays up to twice as fast. Unregistered field keeps the classic
+// deterministic defaults, so swarms that never opt in behave identically run
+// after run. The adjustment happens before the deposit is journaled, so
+// replayed decay is a pure function of the stored record.
 func (s *Server) applyRhythm(sig *Signal) {
 	if sig.HalfLifeS > 0 {
 		return // an explicit half-life is always honored
+	}
+	tempo, covered := s.territories.Tempo(sig.Resource)
+	if !covered {
+		return // untouched: let the field apply its own defaults
 	}
 	base := float64(DefaultHalfLifeS)
 	if ch, ok := s.field.channelOf(sig.Kind); ok && ch.DefaultHalfLifeS > 0 {
 		base = ch.DefaultHalfLifeS
 	}
-	tempo := s.territories.Tempo(sig.Resource)
 	velocity := s.claims.Velocity(prefixAt(sig.Resource, 1))
 	if velocity > 20 {
 		velocity = 20
 	}
 	speedup := 1 + float64(velocity)/20 // 20 claims in 10 min halves the half-life
-	if tempo == 1 && speedup == 1 {
-		return // untouched: let the field apply its own defaults
-	}
 	sig.HalfLifeS = base * tempo / speedup
 }
 

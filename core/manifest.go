@@ -78,7 +78,7 @@ func (s *Server) handleManifest(w http.ResponseWriter, r *http.Request) {
 				"doc":    "Push one state transition to a watch; the derived signal is deposited and returned."},
 			{"name": "territory_set", "method": "POST", "path": "/v1/territories",
 				"params": map[string]string{"prefix": "required URI prefix", "tempo": "default half-life multiplier: <1 fast territory, >1 slow"},
-				"doc":    "Tune the rhythm of a region: deposits under the prefix that omit half_life_s get the territory's tempo. Claim-velocity evaporation stacks on top — contested territory decays up to 2x faster."},
+				"doc":    "Tune the rhythm of a region: deposits under the prefix that omit half_life_s get the territory's tempo, and claim-velocity evaporation stacks on top (contested territory decays up to 2x faster). Both apply only inside registered territories — unregistered field keeps classic deterministic defaults."},
 			{"name": "events", "method": "GET", "path": "/v1/events",
 				"doc": "Server-sent event stream of everything happening on the substrate."},
 			{"name": "agents", "method": "GET", "path": "/v1/agents", "doc": "List agent profiles, most recently active first."},

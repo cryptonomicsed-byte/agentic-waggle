@@ -195,15 +195,22 @@ func TestTerritoryTempoAndVelocity(t *testing.T) {
 		t.Fatalf("explicit half-life overridden: %v", sig["half_life_s"])
 	}
 
-	// claim velocity shortens defaults: 10 claims in the window → speedup 1.5
+	// claim velocity shortens defaults, but ONLY inside a registered
+	// territory: dynamic evaporation is opt-in so unregistered field stays
+	// deterministic run after run
 	for i := 0; i < 10; i++ {
 		doJSON(t, ts, "POST", "/v1/claims", map[string]any{"agent": "a1", "resource": "task://hot/" + strings.Repeat("x", i+1), "ttl_s": 60})
 	}
 	code, sig = doJSON(t, ts, "POST", "/v1/signals", map[string]any{"agent": "a1", "resource": "task://hot/x", "kind": "explored"})
+	if code != 200 || sig["half_life_s"].(float64) != 1800 {
+		t.Fatalf("unregistered territory must keep classic defaults, got %v", sig["half_life_s"])
+	}
+	doJSON(t, ts, "POST", "/v1/territories", map[string]any{"prefix": "task://", "tempo": 1})
+	code, sig = doJSON(t, ts, "POST", "/v1/signals", map[string]any{"agent": "a1", "resource": "task://hot/x2", "kind": "explored"})
 	if code != 200 {
 		t.Fatalf("deposit: %d", code)
 	}
-	if got := sig["half_life_s"].(float64); math.Abs(got-1200) > 1e-6 { // 1800 / 1.5
+	if got := sig["half_life_s"].(float64); math.Abs(got-1200) > 1e-6 { // 1800 / 1.5 (10 claims → speedup 1.5)
 		t.Fatalf("velocity-shortened half-life want 1200, got %v", got)
 	}
 }
@@ -410,7 +417,7 @@ func TestExplainEndpointAndReplayOfNewTypes(t *testing.T) {
 	if _, ok := srv2.watches.Get(watchID); !ok {
 		t.Fatal("watch lost across restart")
 	}
-	if got := srv2.territories.Tempo("loom://x"); got != 0.5 {
-		t.Fatalf("territory tempo lost across restart: %v", got)
+	if got, covered := srv2.territories.Tempo("loom://x"); !covered || got != 0.5 {
+		t.Fatalf("territory tempo lost across restart: %v (covered=%v)", got, covered)
 	}
 }
