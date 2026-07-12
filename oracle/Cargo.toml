@@ -1,0 +1,11 @@
+[package]
+name = "fractal-oracle"
+version = "0.1.0"
+edition = "2021"
+
+# Std only, like cli/wag: the oracle must build and run in any sandbox.
+[dependencies]
+
+[[bin]]
+name = "fractal-oracle"
+path = "src/main.rs"
