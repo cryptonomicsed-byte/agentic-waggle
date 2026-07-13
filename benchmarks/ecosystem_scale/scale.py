@@ -198,7 +198,7 @@ def run_adversary(kind: str, m: Metrics, stop: threading.Event):
 
 # ── correctness under load: run the real redteam checks on the hot field ─────
 
-def correctness_phase() -> tuple[dict, dict]:
+def correctness_phase(snapshot_capture: dict | None = None) -> tuple[dict, dict]:
     """After the storm, the substrate's guarantees must still hold. These plant
     their own isolated resources, so they measure the field's behavior under the
     residual load, not the synthetic traffic itself.
@@ -229,7 +229,13 @@ def correctness_phase() -> tuple[dict, dict]:
             "sybil_capped_and_flagged": redteam.scenario_sybil(ring_size=8),
             "lease_reclaims_in_bound": redteam.scenario_lease_squat(n=5, ttl_s=2.0),
             "cost_efficiency_ranking_holds": cost_efficiency_holds(),
+            # cross-inhibition math (kernel property tests prove it in isolation)
+            # must also hold against real concurrent multi-channel writes
+            "cross_inhibition_never_amplifies": inhibition_bounded_under_load(),
         }
+        # a snapshot captured mid-storm must be a clean, verifiable read
+        if snapshot_capture is not None and snapshot_capture.get("captured"):
+            invariants["snapshot_restores_under_load"] = snapshot_restores(snapshot_capture)
         observations = {}
         if taboo_gate_enforced():
             # the gate is live: taboo-grief resistance is now a hard invariant
@@ -293,6 +299,80 @@ def cost_efficiency_holds() -> bool:
     return len(sigs) >= 2 and sigs[0]["resource"] == "probe://cheap"
 
 
+# ── load-hardening: the two things the first benchmark didn't test ───────────
+
+def inhibition_bounded_under_load() -> bool:
+    """Cross-inhibition math, checked against real concurrent multi-channel
+    writes rather than the property tests' single-threaded generation. The
+    invariant: inhibition only ever *suppresses* — every signal's effective
+    intensity stays ≤ decayed × tier-weight (multiplier ≤ 1), and every
+    individual inhibition multiplier is ≤ 1. A co-located gold + fragile bounded
+    verifies suppression actually fires (bounded's low-mode gold inhibition, the
+    dead-cat filter); a field-wide scan over storm resources confirms nothing,
+    anywhere, amplified under the concurrent write pressure."""
+    eps = 1e-6
+
+    def never_amplifies(ex: dict) -> bool:
+        for c in ex.get("contributions", []):
+            ceiling = c["signal"].get("intensity", 0) * c.get("tier_weight", 1) * (1 + eps)
+            if c.get("effective", 0) > ceiling:
+                return False
+            for tr in c.get("inhibitions", []):
+                if tr.get("multiplier", 1) > 1 + eps:
+                    return False
+        return True
+
+    # co-located inhibitor + inhibited (gate-independent: no taboo needed)
+    res = "probe://inhibition"
+    redteam.register("inh-probe")
+    redteam.deposit("inh-probe", res, "gold", intensity=8.0)
+    redteam.deposit("inh-probe", res, "bounded", intensity=1.5)  # fragile → suppresses gold
+    ex = _get_explain(res)
+    if not never_amplifies(ex):
+        return False
+    suppressed = any(
+        c.get("effective", 0) < c["signal"].get("intensity", 0) * c.get("tier_weight", 1) * (1 - eps)
+        for c in ex.get("contributions", [])
+    )
+
+    # field-wide: nothing amplified anywhere under the storm's residual load
+    for r in _sample_storm_resources():
+        if not never_amplifies(_get_explain(r)):
+            return False
+    return suppressed
+
+
+def _get_explain(resource: str) -> dict:
+    import urllib.parse
+    return _http("GET", "/v1/explain?resource=" + urllib.parse.quote(resource, safe="")) or {}
+
+
+def _sample_storm_resources(limit: int = 12) -> list[str]:
+    """A spread of resources the storm actually wrote, across powers/channels."""
+    seen: list[str] = []
+    for prefix in ("repo://", "osovm://", "task://", "ori://", "chain://", "loom://"):
+        out = _http("GET", f"/v1/sniff?prefix={prefix}&limit=4")
+        for s in (out or {}).get("signals", []):
+            if s["resource"] not in seen:
+                seen.append(s["resource"])
+    return seen[:limit]
+
+
+def snapshot_restores(cap: dict) -> bool:
+    """A snapshot taken mid-storm must be a clean, atomic read: loading it back
+    the daemon recomputes the content hash and accepts it only if it matches. A
+    torn read (a write interleaved into the capture) would produce a snapshot
+    whose hash fails to verify. So: the mid-load capture loads with a
+    server-verified hash equal to the captured one, and the same signal count."""
+    snap = cap.get("snapshot")
+    if not snap:
+        return False
+    out = _http("POST", "/v1/snapshot/load", snap)
+    if not isinstance(out, dict) or "error" in out:
+        return False
+    return out.get("hash") == snap.get("hash") and out.get("loaded") == len(snap.get("signals", []))
+
+
 # ── report ──────────────────────────────────────────────────────────────────
 
 def pct(xs, p):
@@ -337,6 +417,22 @@ def main(argv):
         kind = "sybil" if i % 2 == 0 else "taboo"
         threads.append(threading.Thread(target=run_adversary, args=(kind, m, stop), daemon=True))
 
+    # capture a snapshot mid-storm, racing real concurrent writes: a torn read
+    # would produce a hash the daemon later refuses to load. Skips cleanly if the
+    # daemon has no journal (-data). Requires -data to exercise.
+    snapshot_capture: dict = {"captured": False}
+
+    def snapshot_midload():
+        time.sleep(args.duration * 0.5)
+        try:
+            snap = _http("GET", "/v1/snapshot?prefix=osovm://")
+        except (urllib.error.URLError, urllib.error.HTTPError, OSError):
+            return  # no -data (409) → snapshot-under-load test is N/A this run
+        if isinstance(snap, dict) and "signals" in snap and snap.get("hash"):
+            snapshot_capture.update(snapshot=snap, captured=True)
+
+    threads.append(threading.Thread(target=snapshot_midload, daemon=True))
+
     print(f"ecosystem_scale: {len(POWERS)} powers x {args.powers_per} = {honest} honest "
           f"workers + {n_adv} adversaries, {args.duration:.0f}s against {BASE}")
     t_start = time.perf_counter()
@@ -358,7 +454,7 @@ def main(argv):
               f"p95={pct(xs,95):6.1f}ms  p99={pct(xs,99):6.1f}ms")
 
     print("\n── invariants under load (gate the verdict) ──")
-    invariants, observations = correctness_phase()
+    invariants, observations = correctness_phase(snapshot_capture)
     for name, ok in invariants.items():
         print(f"  [{'PASS' if ok else 'FAIL'}] {name}")
 

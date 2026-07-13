@@ -56,6 +56,19 @@ Two tiers, because they are not equally strong promises:
   a small multiple of the TTL.
 - `cost_efficiency_ranking_holds` — a cheap gold still outranks an equally
   strong expensive gold under `optimize=cost_efficiency`.
+- `cross_inhibition_never_amplifies` — the kernel property tests prove
+  inhibition only suppresses (multiplier ≤ 1) in isolation; this checks the same
+  invariant against real concurrent multi-channel writes. A co-located gold +
+  fragile bounded confirms suppression actually fires (the dead-cat filter), and
+  a field-wide scan over storm resources confirms no signal, anywhere, has
+  `effective > decayed × tier_weight` under the concurrent write pressure.
+- `snapshot_restores_under_load` (only when the daemon has `-data`) — a snapshot
+  captured *mid-storm*, racing real writes, must be an atomic read: loading it
+  back, the daemon recomputes the content hash and accepts it only if it
+  matches. A torn read would produce a hash that fails to verify. This confirms
+  the content-addressed capture is safe under the realistic condition it will
+  actually be used in — snapshotting a live field to debug an incident, not a
+  quiet daemon.
 
 **Observations** (reported, not gated — only when the gate is *off*):
 - `taboo_grief_detected` — flooding detection is rate-relative (an agent above
