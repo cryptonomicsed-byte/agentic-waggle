@@ -102,8 +102,13 @@ defaults, so swarms that never opt in behave identically run after run.
 - `GET /v1/agents/{id}` → profile or 404.
 
 ### Signals
-- `POST /v1/signals` `{agent, resource, kind, subtype?, intensity?, half_life_s?, decay?, alpha?, evidence_tier?, note?, meta?}`
+- `POST /v1/signals` `{agent, resource, kind, subtype?, intensity?, half_life_s?, decay?, alpha?, evidence_tier?, cost?, note?, meta?}`
   → the stored (possibly reinforced) signal. 400 if agent/resource/kind missing.
+  `cost` is `{tokens?, wall_clock_ms?, dollars?}` — what producing the finding
+  cost. It accumulates across additive reinforcement (a re-walked trail sums
+  its spend) and supersedes under replace-mode. It powers cost-aware routing:
+  a gold found for free and a gold found after 10k tokens are not equally
+  attractive to follow.
   Unknown `decay` values canonicalize to exponential; a typed channel's
   registered kernel applies only when `decay` is omitted entirely. Unknown
   tiers canonicalize to `self-report`. Deposits on a `replace`-mode channel

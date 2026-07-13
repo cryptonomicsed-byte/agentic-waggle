@@ -70,6 +70,15 @@ func (s *Store) Close() error {
 
 // Replay reads the journal and applies each entry via apply(type, data).
 func Replay(dir string, apply func(typ string, data json.RawMessage) error) error {
+	return ReplayWithTime(dir, func(typ string, _ time.Time, data json.RawMessage) error {
+		return apply(typ, data)
+	})
+}
+
+// ReplayWithTime is Replay with the journal entry's wall-clock time passed
+// through — needed by windowed recall, which selects entries by when they were
+// journaled rather than by the signal's own deposit timestamp.
+func ReplayWithTime(dir string, apply func(typ string, at time.Time, data json.RawMessage) error) error {
 	if dir == "" {
 		return nil
 	}
@@ -92,7 +101,7 @@ func Replay(dir string, apply func(typ string, data json.RawMessage) error) erro
 		if err := json.Unmarshal(sc.Bytes(), &e); err != nil {
 			return fmt.Errorf("journal line %d: %w", line, err)
 		}
-		if err := apply(e.Type, e.Data); err != nil {
+		if err := apply(e.Type, e.At, e.Data); err != nil {
 			return fmt.Errorf("journal line %d (%s): %w", line, e.Type, err)
 		}
 	}

@@ -75,6 +75,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /v1/gradient", s.handleGradient)
 	m.HandleFunc("GET /v1/explain", s.handleExplain)
 	m.HandleFunc("GET /v1/recall", s.handleRecall)
+	m.HandleFunc("GET /v1/recall/window", s.handleRecallWindow)
 
 	m.HandleFunc("GET /v1/channels", s.handleChannels)
 	m.HandleFunc("POST /v1/channels", s.handleChannelRegister)
@@ -85,6 +86,9 @@ func (s *Server) routes() {
 
 	m.HandleFunc("POST /v1/territories", s.handleTerritorySet)
 	m.HandleFunc("GET /v1/territories", s.handleTerritories)
+
+	m.HandleFunc("GET /v1/snapshot", s.handleSnapshotExport)
+	m.HandleFunc("POST /v1/snapshot/load", s.handleSnapshotLoad)
 
 	m.HandleFunc("POST /v1/claims", s.handleClaim)
 	m.HandleFunc("POST /v1/claims/release", s.handleRelease)
@@ -210,6 +214,7 @@ func (s *Server) handleSniff(w http.ResponseWriter, r *http.Request) {
 		Agent:    q.Get("agent"),
 		Min:      min,
 		MinTier:  q.Get("min_tier"),
+		Optimize: q.Get("optimize"),
 		Limit:    limit,
 	})
 	if sigs == nil {
@@ -289,6 +294,41 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 		sigs = []Signal{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"at": at, "signals": sigs})
+}
+
+func (s *Server) handleRecallWindow(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	until := time.Now()
+	if v := q.Get("until"); v != "" {
+		t, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "until must be RFC3339: "+err.Error())
+			return
+		}
+		until = t
+	}
+	since := until.Add(-24 * time.Hour) // default: a rolling day
+	if v := q.Get("since"); v != "" {
+		t, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "since must be RFC3339: "+err.Error())
+			return
+		}
+		since = t
+	}
+	events, err := RecallWindow(s.dataDir, q.Get("territory"), since, until)
+	if err == ErrNoJournal {
+		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if events == nil {
+		events = []WindowEvent{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"since": since, "until": until, "events": events})
 }
 
 // ---- channels -----------------------------------------------------------------

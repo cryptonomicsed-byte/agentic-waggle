@@ -303,6 +303,49 @@ func TestChannelRegistrationAndManifest(t *testing.T) {
 	}
 }
 
+func TestCostEfficiencyRanking(t *testing.T) {
+	f, _ := newTestField()
+	// two equally strong golds: one found cheaply, one after heavy reasoning
+	f.Deposit(Signal{Agent: "cheap", Resource: "repo://a", Kind: "gold", Intensity: 8,
+		Cost: &Cost{Tokens: 100}})
+	f.Deposit(Signal{Agent: "pricey", Resource: "repo://b", Kind: "gold", Intensity: 8,
+		Cost: &Cost{Tokens: 50000}})
+	// a costless gold ranks as maximally efficient (epsilon floor, no div-by-0)
+	f.Deposit(Signal{Agent: "free", Resource: "repo://c", Kind: "gold", Intensity: 6})
+
+	// default ranking is by intensity: the two 8s lead, order among them
+	// unspecified, free (6) last
+	byIntensity := f.Sniff(SniffQuery{Prefix: "repo://"})
+	if byIntensity[len(byIntensity)-1].Agent != "free" {
+		t.Fatalf("intensity ranking should put the weaker signal last, got %v", byIntensity[len(byIntensity)-1].Agent)
+	}
+
+	// cost-efficiency ranking: free > cheap > pricey
+	byCost := f.Sniff(SniffQuery{Prefix: "repo://", Optimize: "cost_efficiency"})
+	order := []string{byCost[0].Agent, byCost[1].Agent, byCost[2].Agent}
+	if order[0] != "free" || order[1] != "cheap" || order[2] != "pricey" {
+		t.Fatalf("cost-efficiency ranking wrong: %v", order)
+	}
+	if byCost[0].CostEfficiency <= byCost[2].CostEfficiency {
+		t.Fatalf("free must be more cost-efficient than pricey: %v vs %v", byCost[0].CostEfficiency, byCost[2].CostEfficiency)
+	}
+}
+
+func TestCostAccumulatesOnReinforcement(t *testing.T) {
+	f, _ := newTestField()
+	f.Deposit(Signal{Agent: "a", Resource: "r", Kind: "gold", Intensity: 3, Cost: &Cost{Tokens: 100, Dollars: 0.01}})
+	out := f.Deposit(Signal{Agent: "a", Resource: "r", Kind: "gold", Intensity: 3, Cost: &Cost{Tokens: 200, Dollars: 0.02}})
+	if out.Cost == nil || out.Cost.Tokens != 300 || math.Abs(out.Cost.Dollars-0.03) > 1e-9 {
+		t.Fatalf("reinforcement should sum cost, got %+v", out.Cost)
+	}
+	// bounded (replace mode) supersedes cost instead of summing
+	f.Deposit(Signal{Agent: "o", Resource: "r2", Kind: "bounded", Intensity: 5, Cost: &Cost{Tokens: 1000}})
+	b := f.Deposit(Signal{Agent: "o", Resource: "r2", Kind: "bounded", Intensity: 5, Cost: &Cost{Tokens: 40}})
+	if b.Cost == nil || b.Cost.Tokens != 40 {
+		t.Fatalf("replace-mode cost should supersede, got %+v", b.Cost)
+	}
+}
+
 func TestRecall(t *testing.T) {
 	dir := t.TempDir()
 	store, err := OpenStore(dir)

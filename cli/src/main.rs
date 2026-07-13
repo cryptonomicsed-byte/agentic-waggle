@@ -27,9 +27,11 @@ usage: wag <command> [args] [--flags]
                           background, not to nothing) --alpha N
                           --subtype S --tier self-report|corroborated|
                           watch-derived|zangbeto-verified|on-chain-anchored
+                          --cost-tokens N --cost-ms N --cost-dollars N
   sniff                 read the field
                           --resource URI | --prefix URI [--kind K] [--min N]
                           [--min-tier T  drop signals below an evidence tier]
+                          [--optimize cost_efficiency  rank cheap-gold first]
                           [--limit N]
   batch <uri> [uri...]  gradient rollups for many URIs in one call
                           [--kind K] [--weighted]
@@ -46,6 +48,10 @@ usage: wag <command> [args] [--flags]
   channels [list]       typed channels + the evidence-tier ladder
   replay <journal>      re-emit a journal's events to stdout for post-mortem
                           review (--speed events/sec, default 50)
+  snapshot export       export a portable, content-addressed field slice
+                          [--prefix URI] [--at RFC3339] [-o FILE] (needs -data)
+  snapshot replay <file>  load a snapshot into a (fresh) daemon, preserving
+                          decay state — reproduce a past decision in isolation
   attack-sim <scenario> run a red-team scenario against the field
                           scenario: sybil | taboo-grief | lease-squat | all
                           (needs waggled -debug; scriptable in CI)
@@ -78,14 +84,15 @@ fn main() {
     let result = match argv[0].as_str() {
         "register" => register(&host, &flags),
         "mark" => mark(&host, &pos, &flags),
-        "sniff" => get(&host, &format!("/v1/sniff{}", query(&flags, &[("resource", "resource"), ("prefix", "prefix"), ("kind", "kind"), ("agent", "agent"), ("min", "min"), ("min-tier", "min_tier"), ("limit", "limit")]))),
+        "sniff" => get(&host, &format!("/v1/sniff{}", query(&flags, &[("resource", "resource"), ("prefix", "prefix"), ("kind", "kind"), ("agent", "agent"), ("min", "min"), ("min-tier", "min_tier"), ("optimize", "optimize"), ("limit", "limit")]))),
         "batch" => batch(&host, &pos, &flags),
         "gradient" => get(&host, &format!("/v1/gradient{}", query(&flags, &[("prefix", "prefix"), ("kind", "kind"), ("k", "k"), ("depth", "depth"), ("weighted", "weighted"), ("diffuse", "diffuse")]))),
         "explain" => explain(&host, &pos),
         "recall" => recall(&host, &pos, &flags),
         "channels" => get(&host, "/v1/channels"),
         "replay" => replay(&pos, &flags),
-        "attack-sim" => return attack_sim(&host, &pos),
+        "attack-sim" => attack_sim(&host, &pos),
+        "snapshot" => snapshot(&host, &pos, &flags),
         "claim" => claim(&host, &pos, &flags),
         "release" => release(&host, &pos, &flags),
         "claims" => get(&host, "/v1/claims"),
@@ -181,6 +188,24 @@ fn mark(host: &str, pos: &[String], flags: &Flags) -> Out {
     if let Some(t) = flags.get("tier") {
         body.str("evidence_tier", t);
     }
+    // cost: what producing this finding cost (drives sniff --optimize cost)
+    let mut cost = JsonObj::new();
+    let mut has_cost = false;
+    if let Some(v) = flags.get("cost-tokens") {
+        cost.raw("tokens", &num(v, "--cost-tokens")?);
+        has_cost = true;
+    }
+    if let Some(v) = flags.get("cost-ms") {
+        cost.raw("wall_clock_ms", &num(v, "--cost-ms")?);
+        has_cost = true;
+    }
+    if let Some(v) = flags.get("cost-dollars") {
+        cost.raw("dollars", &num(v, "--cost-dollars")?);
+        has_cost = true;
+    }
+    if has_cost {
+        body.raw("cost", &cost.finish());
+    }
     if let Some(n) = flags.get("note") {
         body.str("note", n);
     }
@@ -222,6 +247,36 @@ fn recall(host: &str, pos: &[String], flags: &Flags) -> Out {
         q.push_str(&format!("&kind={}", urlenc(k)));
     }
     get(host, &q)
+}
+
+/// snapshot export/replay: portable, content-addressed field slices (round 2,
+/// #6). export pulls a territory/time-scoped capture (with preserved decay
+/// timestamps) to a file or stdout; replay loads one into a target daemon —
+/// point it at a fresh `waggled` to reproduce a past decision in isolation.
+fn snapshot(host: &str, pos: &[String], flags: &Flags) -> Out {
+    match pos.first().map(String::as_str) {
+        Some("export") => {
+            let mut path = "/v1/snapshot".to_string();
+            let q = query(flags, &[("prefix", "prefix"), ("at", "at")]);
+            path.push_str(&q);
+            let (code, body) = request(host, "GET", &path, None)?;
+            if code == 200 {
+                if let Some(out) = flags.get("o") {
+                    std::fs::write(out, &body).map_err(|e| format!("write {out}: {e}"))?;
+                    return Ok((200, format!("{{\"exported\":true,\"file\":\"{}\"}}", esc(out))));
+                }
+            }
+            Ok((code, body))
+        }
+        Some("replay") => {
+            let file = pos
+                .get(1)
+                .ok_or("usage: wag snapshot replay <file> [--addr host]")?;
+            let body = std::fs::read_to_string(file).map_err(|e| format!("read {file}: {e}"))?;
+            request(host, "POST", "/v1/snapshot/load", Some(&body))
+        }
+        _ => Err("usage: wag snapshot export [--prefix URI] [--at RFC3339] [-o FILE] | wag snapshot replay <file>".into()),
+    }
 }
 
 /// replay re-emits a journal's entries to stdout at a steady pace, so a human

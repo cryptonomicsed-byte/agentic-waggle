@@ -55,6 +55,7 @@ class Agent:
     def mark(self, resource: str, kind: str, *, intensity: float = 1.0,
              half_life_s: float = 0, decay: str = "", alpha: float = 0,
              subtype: str = "", evidence_tier: str = "",
+             cost: dict | None = None,
              note: str = "", meta: dict[str, str] | None = None) -> dict:
         """Deposit a decaying signal; re-marking the same kind reinforces it.
 
@@ -69,26 +70,35 @@ class Agent:
         self-report; watch-derived and better come from instruments, not
         arguments).
         """
-        return self._http("POST", "/v1/signals", body={
+        body = {
             "agent": self.id, "resource": resource, "kind": kind,
             "intensity": intensity, "half_life_s": half_life_s,
             "decay": decay, "alpha": alpha, "subtype": subtype,
-            "evidence_tier": evidence_tier, "note": note, "meta": meta or {}})
+            "evidence_tier": evidence_tier, "note": note, "meta": meta or {}}
+        if cost:
+            # {tokens, wall_clock_ms, dollars} — what producing this cost;
+            # accumulates on reinforcement, drives cost_efficiency ranking
+            body["cost"] = cost
+        return self._http("POST", "/v1/signals", body=body)
 
     def sniff(self, *, resource: str = "", prefix: str = "", kind: str = "",
               agent: str = "", min_intensity: float = 0, min_tier: str = "",
-              limit: int = 0) -> list[dict]:
+              optimize: str = "", limit: int = 0) -> list[dict]:
         """Current (decayed) signals, strongest first.
 
         min_tier filters by evidence tier: min_tier="corroborated" drops
         unverified self-reports — use before acting where bad scent is
         expensive (e.g. committing capital). Each signal carries
         effective_intensity: decay x tier weight x cross-inhibition.
+
+        optimize="cost_efficiency" ranks by effective intensity per unit
+        cost instead of raw strength — prefer a cheap gold over an equally
+        strong gold that cost 10k tokens.
         """
         return self._http("GET", "/v1/sniff", params={
             "resource": resource, "prefix": prefix, "kind": kind,
             "agent": agent, "min": min_intensity or "", "min_tier": min_tier,
-            "limit": limit or ""})["signals"]
+            "optimize": optimize, "limit": limit or ""})["signals"]
 
     def sniff_batch(self, uris: list[str], *, kind: str = "",
                     weighted: bool = False) -> dict[str, dict]:

@@ -32,11 +32,62 @@ type Signal struct {
 	EvidenceTier string            `json:"evidence_tier,omitempty"`
 	Note         string            `json:"note,omitempty"`
 	Meta         map[string]string `json:"meta,omitempty"`
-	DepositedAt  time.Time         `json:"deposited_at"`
+	// Cost is what producing this finding cost. A gold found for free and a
+	// gold found after 10k tokens of reasoning are not equally attractive to
+	// route toward; recording cost turns the field into an economic optimizer,
+	// not just a discovery optimizer. Optional and additive across
+	// reinforcement.
+	Cost        *Cost     `json:"cost,omitempty"`
+	DepositedAt time.Time `json:"deposited_at"`
 	// Effective is the read-time weighted intensity (decay x tier weight x
 	// cross-inhibition). Output-only: filled on snapshots served to clients,
 	// never stored or journaled.
 	Effective float64 `json:"effective_intensity,omitempty"`
+	// CostEfficiency is effective intensity per unit cost, filled on reads
+	// when the caller asks for cost-aware ranking. Output-only.
+	CostEfficiency float64 `json:"cost_efficiency,omitempty"`
+}
+
+// Cost is the compute price of producing a finding. All fields optional; a
+// depositor fills whichever it can meter. Reinforcement sums them, so a trail
+// re-walked accumulates the total spend that keeps it hot.
+type Cost struct {
+	Tokens      float64 `json:"tokens,omitempty"`
+	WallClockMS float64 `json:"wall_clock_ms,omitempty"`
+	Dollars     float64 `json:"dollars,omitempty"`
+}
+
+// weight collapses a cost into one scalar for efficiency ranking. Dollars
+// dominate when present (real money is the sharpest signal); else tokens; else
+// wall-clock. A costless signal weighs the epsilon floor so it ranks as
+// maximally efficient rather than dividing by zero.
+func (c *Cost) weight() float64 {
+	const eps = 1e-9
+	if c == nil {
+		return eps
+	}
+	// normalize onto a common ~"dollar" scale: tokens priced at $1/1e6 (a
+	// round order-of-magnitude for LLM tokens), wall-clock at $1/hour.
+	w := c.Dollars + c.Tokens/1e6 + c.WallClockMS/3.6e6
+	if w < eps {
+		return eps
+	}
+	return w
+}
+
+// add accumulates b into a (reinforcement), returning the merged cost.
+func (a *Cost) add(b *Cost) *Cost {
+	if a == nil {
+		return b
+	}
+	if b == nil {
+		return a
+	}
+	return &Cost{
+		Tokens:      a.Tokens + b.Tokens,
+		WallClockMS: a.WallClockMS + b.WallClockMS,
+		Dollars:     a.Dollars + b.Dollars,
+	}
 }
 
 // At returns the decayed intensity of the signal at time t.
@@ -172,6 +223,11 @@ func (f *Field) Deposit(sig Signal) Signal {
 			s.Alpha = sig.Alpha
 			s.Subtype = sig.Subtype
 			s.EvidenceTier = sig.EvidenceTier
+			if replace {
+				s.Cost = sig.Cost // a re-measurement's cost supersedes
+			} else {
+				s.Cost = s.Cost.add(sig.Cost) // reinforcement accumulates spend
+			}
 			if sig.Note != "" {
 				s.Note = sig.Note
 			}
@@ -214,6 +270,7 @@ type SniffQuery struct {
 	Agent    string  // depositing agent, or ""
 	Min      float64 // minimum current intensity (evaporated threshold if 0)
 	MinTier  string  // minimum evidence tier ("corroborated" filters out self-reports)
+	Optimize string  // "" ranks by intensity; "cost_efficiency" ranks by effective/cost
 	Limit    int     // max signals returned (0 = 200)
 }
 
@@ -253,7 +310,8 @@ func (f *Field) Sniff(q SniffQuery) []Signal {
 			if cur := s.At(now); cur >= min {
 				snap := s.snapshot(now)
 				m, _ := f.inhibitionAt(sigs, s, now)
-				snap.Effective = cur * TierWeight(s.EvidenceTier) * m
+				snap.Effective = kernel.Effective(cur, TierWeight(s.EvidenceTier), m)
+				snap.CostEfficiency = snap.Effective / s.Cost.weight()
 				out = append(out, snap)
 			}
 		}
@@ -270,7 +328,14 @@ func (f *Field) Sniff(q SniffQuery) []Signal {
 	}
 	f.mu.RUnlock()
 
-	sort.Slice(out, func(i, j int) bool { return out[i].Intensity > out[j].Intensity })
+	// Cost-aware routing prefers cheap findings: a gold found for free
+	// outranks an equally strong gold that cost 10k tokens. Default ranking
+	// stays by raw intensity.
+	if q.Optimize == "cost_efficiency" {
+		sort.Slice(out, func(i, j int) bool { return out[i].CostEfficiency > out[j].CostEfficiency })
+	} else {
+		sort.Slice(out, func(i, j int) bool { return out[i].Intensity > out[j].Intensity })
+	}
 	if len(out) > limit {
 		out = out[:limit]
 	}

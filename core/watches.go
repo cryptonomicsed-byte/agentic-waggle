@@ -102,6 +102,7 @@ type WatchEvent struct {
 	Subtype   string            `json:"subtype,omitempty"`
 	Intensity float64           `json:"intensity,omitempty"`
 	HalfLifeS float64           `json:"half_life_s,omitempty"`
+	Cost      *Cost             `json:"cost,omitempty"` // what producing this transition cost
 	Note      string            `json:"note,omitempty"`
 	Meta      map[string]string `json:"meta,omitempty"`
 }
@@ -123,6 +124,7 @@ func (w *Watch) Derive(ev WatchEvent) (Signal, bool) {
 		Subtype:      ev.Subtype,
 		Intensity:    ev.Intensity,
 		HalfLifeS:    ev.HalfLifeS,
+		Cost:         ev.Cost,
 		EvidenceTier: w.Tier,
 		Note:         ev.Note,
 		Meta:         ev.Meta,
