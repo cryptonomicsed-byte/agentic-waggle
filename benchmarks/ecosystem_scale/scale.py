@@ -96,7 +96,8 @@ def power_osovm(m: Metrics, rng: random.Random):
     timed(m, "deposit", lambda: _http("POST", "/v1/signals", {
         "agent": f"osovm-{threading.get_ident()}", "resource": f"osovm://unit/{unit}",
         "kind": "gold", "intensity": 3, "note": "bytecode cached",
-        "cost": {"wall_clock_ms": rng.uniform(5, 400), "tokens": 0}}))
+        "cost": {"wall_clock_ms": rng.uniform(5, 400),
+                 "source": {"producer": "osovm", "method": "compile-wall-clock", "units": "ms"}}}))
 
 
 def power_loom(m: Metrics, rng: random.Random):
@@ -106,7 +107,9 @@ def power_loom(m: Metrics, rng: random.Random):
     timed(m, "deposit", lambda: _http("POST", "/v1/signals", {
         "agent": f"loom-{threading.get_ident()}", "resource": f"loom://p{preset}/{market}",
         "kind": "gold" if win else "dead-end", "intensity": rng.uniform(1, 6),
-        "cost": {"dollars": rng.uniform(0.01, 3.0), "wall_clock_ms": rng.uniform(50, 800)}}))
+        "cost": {"dollars": rng.uniform(0.01, 3.0), "wall_clock_ms": rng.uniform(50, 800),
+                 "source": {"producer": "loom", "method": "commission+slippage+decision-latency",
+                            "units": "dollars+ms"}}}))
 
 
 def power_vantage(m: Metrics, rng: random.Random):

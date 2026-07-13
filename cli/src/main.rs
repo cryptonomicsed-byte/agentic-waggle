@@ -28,6 +28,7 @@ usage: wag <command> [args] [--flags]
                           --subtype S --tier self-report|corroborated|
                           watch-derived|zangbeto-verified|on-chain-anchored
                           --cost-tokens N --cost-ms N --cost-dollars N
+                          --cost-producer NAME --cost-method M --cost-units U
                           --capability TOKEN (taboo only: Èṣù-signed grant)
   sniff                 read the field
                           --resource URI | --prefix URI [--kind K] [--min N]
@@ -202,6 +203,22 @@ fn mark(host: &str, pos: &[String], flags: &Flags) -> Out {
     }
     if let Some(v) = flags.get("cost-dollars") {
         cost.raw("dollars", &num(v, "--cost-dollars")?);
+        has_cost = true;
+    }
+    // cost provenance: who measured the numbers and how, so an efficiency
+    // ranking can be audited rather than trusted blind
+    if flags.contains_key("cost-producer") || flags.contains_key("cost-method") {
+        let mut src = JsonObj::new();
+        if let Some(p) = flags.get("cost-producer") {
+            src.str("producer", p);
+        }
+        if let Some(mth) = flags.get("cost-method") {
+            src.str("method", mth);
+        }
+        if let Some(u) = flags.get("cost-units") {
+            src.str("units", u);
+        }
+        cost.raw("source", &src.finish());
         has_cost = true;
     }
     if has_cost {

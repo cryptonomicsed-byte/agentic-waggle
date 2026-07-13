@@ -64,6 +64,21 @@ type Cost struct {
 	Tokens      float64 `json:"tokens,omitempty"`
 	WallClockMS float64 `json:"wall_clock_ms,omitempty"`
 	Dollars     float64 `json:"dollars,omitempty"`
+	// Source is the provenance of the numbers above: who measured them and how.
+	// Before cost_efficiency steers a real decision (Yemọja spawn throttling,
+	// LOOM capital allocation), a big efficiency spread must be traceable to
+	// its instrumentation — is a 270x gap a genuine efficiency difference, or
+	// an artifact of one producer metering dollars and another metering tokens?
+	// Optional, but every producer that meters cost should stamp it.
+	Source *CostSource `json:"source,omitempty"`
+}
+
+// CostSource records how a Cost was measured so a ranking can be audited rather
+// than trusted blind.
+type CostSource struct {
+	Producer string `json:"producer,omitempty"` // repo/module that reported it, e.g. "loom", "osovm"
+	Method   string `json:"method,omitempty"`   // measurement method, e.g. "commission+slippage", "compile-wall-clock"
+	Units    string `json:"units,omitempty"`    // which fields are authoritative, e.g. "dollars+ms", "ms"
 }
 
 // weight collapses a cost into one scalar for efficiency ranking. Dollars
@@ -84,7 +99,11 @@ func (c *Cost) weight() float64 {
 	return w
 }
 
-// add accumulates b into a (reinforcement), returning the merged cost.
+// add accumulates b into a (reinforcement), returning the merged cost. The
+// provenance is carried too: costs from one producer keep their source; costs
+// summed across different producers/methods are stamped mixed, so a signal
+// whose efficiency blends heterogeneous instrumentation says so out loud rather
+// than presenting a clean-looking number over incompatible measurements.
 func (a *Cost) add(b *Cost) *Cost {
 	if a == nil {
 		return b
@@ -96,6 +115,23 @@ func (a *Cost) add(b *Cost) *Cost {
 		Tokens:      a.Tokens + b.Tokens,
 		WallClockMS: a.WallClockMS + b.WallClockMS,
 		Dollars:     a.Dollars + b.Dollars,
+		Source:      mergeSource(a.Source, b.Source),
+	}
+}
+
+// mergeSource keeps a shared provenance, or flags a mix. Two deposits from the
+// same producer+method keep it; differing ones collapse to producer="mixed" so
+// the blend is visible in sniff/explain output.
+func mergeSource(a, b *CostSource) *CostSource {
+	switch {
+	case a == nil:
+		return b
+	case b == nil:
+		return a
+	case *a == *b:
+		return a
+	default:
+		return &CostSource{Producer: "mixed", Method: "reinforced-across-producers"}
 	}
 }
 

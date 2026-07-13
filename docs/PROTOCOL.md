@@ -104,11 +104,17 @@ defaults, so swarms that never opt in behave identically run after run.
 ### Signals
 - `POST /v1/signals` `{agent, resource, kind, subtype?, intensity?, half_life_s?, decay?, alpha?, evidence_tier?, cost?, capability?, note?, meta?}`
   → the stored (possibly reinforced) signal. 400 if agent/resource/kind missing.
-  `cost` is `{tokens?, wall_clock_ms?, dollars?}` — what producing the finding
-  cost. It accumulates across additive reinforcement (a re-walked trail sums
-  its spend) and supersedes under replace-mode. It powers cost-aware routing:
-  a gold found for free and a gold found after 10k tokens are not equally
-  attractive to follow.
+  `cost` is `{tokens?, wall_clock_ms?, dollars?, source?}` — what producing the
+  finding cost. It accumulates across additive reinforcement (a re-walked trail
+  sums its spend) and supersedes under replace-mode. It powers cost-aware
+  routing: a gold found for free and a gold found after 10k tokens are not
+  equally attractive to follow. `source` is `{producer, method, units}`
+  provenance — who measured the numbers and how — so a large efficiency spread
+  can be traced to its instrumentation before it steers a real decision
+  (is a 270× gap genuine, or an artifact of one producer metering dollars and
+  another tokens?). Costs summed across different producers/methods during
+  reinforcement are stamped `source.producer = "mixed"` so a blended number is
+  never mistaken for a clean one.
   Unknown `decay` values canonicalize to exponential; a typed channel's
   registered kernel applies only when `decay` is omitted entirely. Unknown
   tiers canonicalize to `self-report`. Deposits on a `replace`-mode channel
