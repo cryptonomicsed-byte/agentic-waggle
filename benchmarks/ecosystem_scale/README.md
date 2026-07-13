@@ -57,13 +57,33 @@ Two tiers, because they are not equally strong promises:
 - `cost_efficiency_ranking_holds` — a cheap gold still outranks an equally
   strong expensive gold under `optimize=cost_efficiency`.
 
-**Observations** (reported, not gated):
+**Observations** (reported, not gated — only when the gate is *off*):
 - `taboo_grief_detected` — flooding detection is rate-relative (an agent above
   5× the median deposit rate). In a busy field the median is high, so a lone
   griefer hides in the crowd and detection *washes out*. This degradation is a
   finding, not a regression: it is precisely why the real mitigation is Èṣù's
   authenticated-taboo capability gate (Omo-Koda2), not field-level anomaly
-  detection. The benchmark quantifies the exposure the gate closes.
+  detection.
+
+**The gate closes the finding.** When the daemon runs Èṣù's gate in enforce
+mode (`-taboo-auth-key <hex-ed25519-pub> -taboo-auth-enforce`), the benchmark
+detects it and *promotes* taboo-grief resistance from the soft observation above
+to a hard invariant, `taboo_grief_blocked_by_gate`: a griefer holding no
+capability has every taboo refused at deposit (403), so a legitimate gold path
+keeps its full effective mass. That is the actual close-out condition for the
+finding — not merging the gate, but re-running the adversarial load against it
+and watching the soft observation become a passing invariant:
+
+```bash
+cd core && go run . -addr :7777 -debug \
+    -taboo-auth-key <esu-ed25519-pubkey-hex> -taboo-auth-enforce &
+python3 benchmarks/ecosystem_scale/scale.py --powers-per 5 --duration 5 --adversary-frac 0.2
+# ... [PASS] taboo_grief_blocked_by_gate
+```
+
+The public key comes from Èṣù (`TabooCapIssuer::public_key_hex()` in
+Omo-Koda2). Deterministic Ed25519 means the Rust issuer and Go verifier
+interoperate with no shared runtime.
 
 Exit code is 0 for `ECOSYSTEM OK` (all invariants held, error rate < 1%), 1 for
 `ECOSYSTEM DEGRADED`.

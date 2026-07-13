@@ -212,7 +212,13 @@ def correctness_phase() -> tuple[dict, dict]:
                     griefer hides in the crowd. That degradation is a finding,
                     not a regression — it is exactly why the real mitigation is
                     Èṣù's authenticated-taboo capability gate (Omo-Koda2), not
-                    field-level anomaly detection."""
+                    field-level anomaly detection.
+
+    The taboo result moves between tiers depending on the daemon: when the
+    daemon runs Èṣù's gate in enforce mode (-taboo-auth-enforce), an
+    unauthenticated griefer taboo is *refused at deposit*, so taboo-grief
+    resistance becomes a hard invariant — this is the close-out for the finding
+    above. Without the gate it stays the best-effort observation."""
     import io, contextlib
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):  # silence redteam's own prints
@@ -221,10 +227,54 @@ def correctness_phase() -> tuple[dict, dict]:
             "lease_reclaims_in_bound": redteam.scenario_lease_squat(n=5, ttl_s=2.0),
             "cost_efficiency_ranking_holds": cost_efficiency_holds(),
         }
-        observations = {
-            "taboo_grief_detected": redteam.scenario_taboo_grief(spam=10),
-        }
+        observations = {}
+        if taboo_gate_enforced():
+            # the gate is live: taboo-grief resistance is now a hard invariant
+            invariants["taboo_grief_blocked_by_gate"] = taboo_grief_blocked()
+        else:
+            observations["taboo_grief_detected"] = redteam.scenario_taboo_grief(spam=10)
     return invariants, observations
+
+
+def _taboo_refused(agent: str, resource: str) -> bool:
+    """Deposit an unauthenticated taboo and report whether the daemon refused it
+    with 403 (Èṣù enforce mode). Uses a status-aware request rather than
+    redteam._http, which collapses the HTTP code into the JSON error body."""
+    body = json.dumps({"agent": agent, "resource": resource, "kind": "taboo",
+                       "intensity": 10.0}).encode()
+    req = urllib.request.Request(BASE + "/v1/signals", data=body, method="POST",
+                                 headers={"Content-Type": "application/json"})
+    try:
+        urllib.request.urlopen(req, timeout=10)
+        return False  # accepted → gate not enforcing
+    except urllib.error.HTTPError as e:
+        return e.code == 403
+    except urllib.error.URLError:
+        return False
+
+
+def taboo_gate_enforced() -> bool:
+    """Probe whether the daemon enforces Èṣù's taboo gate: an unauthenticated
+    taboo is refused (403) iff enforce mode is on."""
+    redteam.register("gate-probe")
+    return _taboo_refused("gate-probe", "probe://gate-check")
+
+
+def taboo_grief_blocked() -> bool:
+    """With the gate enforced, a griefer holding no capability cannot suppress a
+    legitimate gold path: every unauthenticated taboo is refused and the gold's
+    effective mass is untouched. This is the finding's close-out — the attack is
+    blocked at deposit, not merely (and unreliably) detected after the fact."""
+    res = "probe://gated-legit-path"
+    redteam.register("gold-worker")
+    redteam.deposit("gold-worker", res, "gold", intensity=8.0, evidence_tier="watch-derived")
+    g = redteam.sniff(res, "gold")
+    before = g[0].get("effective_intensity", 0) if g else 0
+    redteam.register("gate-griefer")
+    refused = sum(_taboo_refused("gate-griefer", res) for _ in range(10))
+    g = redteam.sniff(res, "gold")
+    after = g[0].get("effective_intensity", 0) if g else 0
+    return refused == 10 and before > 0 and after >= before * 0.99
 
 
 def cost_efficiency_holds() -> bool:
@@ -309,10 +359,13 @@ def main(argv):
     for name, ok in invariants.items():
         print(f"  [{'PASS' if ok else 'FAIL'}] {name}")
 
-    print("\n── observations (best-effort, reported not gated) ──")
-    for name, ok in observations.items():
-        note = "" if ok else "  (rate-based detection washes out under load — Èṣù's gate is the fix)"
-        print(f"  [{'seen' if ok else 'MISSED'}] {name}{note}")
+    if "taboo_grief_blocked_by_gate" in invariants:
+        print("  (Èṣù taboo gate enforced — taboo-grief resistance is a hard invariant here)")
+    if observations:
+        print("\n── observations (best-effort, reported not gated) ──")
+        for name, ok in observations.items():
+            note = "" if ok else "  (rate-based detection washes out under load — Èṣù's gate is the fix)"
+            print(f"  [{'seen' if ok else 'MISSED'}] {name}{note}")
 
     all_ok = all(invariants.values())
     err_rate = m.errors / max(ops + m.errors, 1)

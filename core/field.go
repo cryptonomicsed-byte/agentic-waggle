@@ -32,6 +32,15 @@ type Signal struct {
 	EvidenceTier string            `json:"evidence_tier,omitempty"`
 	Note         string            `json:"note,omitempty"`
 	Meta         map[string]string `json:"meta,omitempty"`
+	// TabooAuthenticated records, for taboo deposits only, whether the deposit
+	// carried a valid Èṣù taboo-capability token. taboo is the one channel that
+	// gates *actions* (it censors a path) rather than search efficiency, so
+	// unlike the rest of the field it must be authenticatable. Tri-state via
+	// pointer: nil = not a taboo (or no gate configured), false = taboo from an
+	// unauthenticated source, true = taboo from a verified Ọbàtálá-lineage
+	// capability. Surfaced by sniff_explain so a suppression's provenance is
+	// auditable even during a transition period before enforcement is on.
+	TabooAuthenticated *bool `json:"taboo_authenticated,omitempty"`
 	// Cost is what producing this finding cost. A gold found for free and a
 	// gold found after 10k tokens of reasoning are not equally attractive to
 	// route toward; recording cost turns the field into an economic optimizer,

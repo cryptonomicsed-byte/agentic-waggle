@@ -224,6 +224,7 @@ TOOLS = [
                 "subtype": {"type": "string", "description": "Finer label within a channel (e.g. a compile stage)."},
                 "evidence_tier": {"type": "string", "enum": TIERS, "description": "Trust ladder position, default self-report. Higher tiers come from instruments (watches, verification), not assertions."},
                 "cost": {"type": "object", "description": "What producing this finding cost: {tokens, wall_clock_ms, dollars}. Accumulates on reinforcement; drives sniff optimize=cost_efficiency so cheap-gold outranks expensive-gold."},
+                "capability": {"type": "string", "description": "kind=taboo only: an Èṣù-signed capability token (scope=taboo). taboo censors an action, so it is the one channel that can be authenticated — a valid token sets taboo_authenticated=true, and a daemon in enforce mode refuses taboo without one. Omit for every other channel."},
                 "note": {"type": "string", "description": "Free text for whoever sniffs this later."},
                 "meta": {"type": "object", "description": "String map, e.g. a bounded verdict's {escape, maxiter, verdict} or a taboo's justification trace."},
             },

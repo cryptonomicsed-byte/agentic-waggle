@@ -31,6 +31,7 @@ type Server struct {
 	start       time.Time
 	dataDir     string         // journal directory; recall needs it ("" = no persistence)
 	metrics     *AttackMetrics // non-nil only under -debug; red-team scoring
+	tabooAuth   *TabooAuth     // non-nil when Èṣù's taboo-capability key is configured
 }
 
 // EnableDebug turns on the attack-metrics instrumentation and its endpoint.
@@ -38,6 +39,19 @@ type Server struct {
 func (s *Server) EnableDebug() {
 	s.metrics = NewAttackMetrics()
 	s.mux.HandleFunc("GET /v1/debug/attack-metrics", s.handleAttackMetrics)
+}
+
+// EnableTabooAuth configures verification of Èṣù taboo-capability tokens against
+// the given hex ed25519 public key. With enforce, unauthenticated taboo deposits
+// are refused; without it they are accepted but flagged taboo_authenticated=false
+// so a transition can be observed before it is enforced.
+func (s *Server) EnableTabooAuth(pubHex string, enforce bool) error {
+	ta, err := NewTabooAuth(pubHex, enforce)
+	if err != nil {
+		return err
+	}
+	s.tabooAuth = ta
+	return nil
 }
 
 func NewServer(store *Store) *Server {
@@ -159,14 +173,35 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 
 // ---- signals ------------------------------------------------------------------
 
+// depositReq is a Signal plus the out-of-band capability token that authorizes
+// it. The token is never stored on the signal — only its verified verdict is,
+// in TabooAuthenticated — so it is not journaled or served back.
+type depositReq struct {
+	Signal
+	Capability string `json:"capability,omitempty"`
+}
+
 func (s *Server) handleDeposit(w http.ResponseWriter, r *http.Request) {
-	sig, ok := decode[Signal](w, r)
+	req, ok := decode[depositReq](w, r)
 	if !ok {
 		return
 	}
+	sig := req.Signal
 	if sig.Agent == "" || sig.Resource == "" || sig.Kind == "" {
 		writeErr(w, http.StatusBadRequest, "agent, resource and kind are required")
 		return
+	}
+	// Èṣù's gate: taboo censors an action, so it must be authenticatable. When a
+	// key is configured, a taboo deposit's capability is verified; enforce mode
+	// refuses an unauthenticated one, transition mode records the verdict.
+	if sig.Kind == "taboo" && s.tabooAuth != nil {
+		authed := s.tabooAuth.verify(sig.Agent, req.Capability, time.Now())
+		if s.tabooAuth.enforce && !authed {
+			writeErr(w, http.StatusForbidden,
+				"taboo deposits require a valid Èṣù capability token (scope=taboo); see manifest action deposit param 'capability'")
+			return
+		}
+		sig.TabooAuthenticated = &authed
 	}
 	s.applyRhythm(&sig)
 	out := s.field.Deposit(sig)

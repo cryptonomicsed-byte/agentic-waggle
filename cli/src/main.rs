@@ -28,6 +28,7 @@ usage: wag <command> [args] [--flags]
                           --subtype S --tier self-report|corroborated|
                           watch-derived|zangbeto-verified|on-chain-anchored
                           --cost-tokens N --cost-ms N --cost-dollars N
+                          --capability TOKEN (taboo only: Èṣù-signed grant)
   sniff                 read the field
                           --resource URI | --prefix URI [--kind K] [--min N]
                           [--min-tier T  drop signals below an evidence tier]
@@ -208,6 +209,11 @@ fn mark(host: &str, pos: &[String], flags: &Flags) -> Out {
     }
     if let Some(n) = flags.get("note") {
         body.str("note", n);
+    }
+    // taboo only: an Èṣù-signed capability authorizing the censor. Ignored by
+    // other channels; required by a daemon started with -taboo-auth-enforce.
+    if let Some(cap) = flags.get("capability") {
+        body.str("capability", cap);
     }
     request(host, "POST", "/v1/signals", Some(&body.finish()))
 }

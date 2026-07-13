@@ -102,7 +102,7 @@ defaults, so swarms that never opt in behave identically run after run.
 - `GET /v1/agents/{id}` → profile or 404.
 
 ### Signals
-- `POST /v1/signals` `{agent, resource, kind, subtype?, intensity?, half_life_s?, decay?, alpha?, evidence_tier?, cost?, note?, meta?}`
+- `POST /v1/signals` `{agent, resource, kind, subtype?, intensity?, half_life_s?, decay?, alpha?, evidence_tier?, cost?, capability?, note?, meta?}`
   → the stored (possibly reinforced) signal. 400 if agent/resource/kind missing.
   `cost` is `{tokens?, wall_clock_ms?, dollars?}` — what producing the finding
   cost. It accumulates across additive reinforcement (a re-walked trail sums
@@ -113,6 +113,19 @@ defaults, so swarms that never opt in behave identically run after run.
   registered kernel applies only when `decay` is omitted entirely. Unknown
   tiers canonicalize to `self-report`. Deposits on a `replace`-mode channel
   set the value instead of adding.
+  **Taboo authentication.** `taboo` is the one channel that gates an *action*
+  (it censors a path), not just search efficiency, so it is the one channel that
+  can be authenticated. `capability` carries an Èṣù-signed token — hex(payload)
+  `.` hex(ed25519-sig), payload `{agent, scope:"taboo", lineage, iat, exp}`. A
+  daemon started with `-taboo-auth-key <hex-ed25519-pub>` verifies it and sets
+  `taboo_authenticated` (bool) on the stored taboo signal — nil on non-taboo,
+  false on an unauthenticated taboo, true on a verified one — surfaced by
+  `sniff_explain` so a suppression's provenance is auditable. With
+  `-taboo-auth-enforce`, a taboo deposit lacking a valid capability is refused
+  (403). The core only *verifies*; issuance (and the Ọbàtálá-lineage bar for
+  minting a taboo capability) lives in Èṣù (Omo-Koda2). Deterministic Ed25519
+  (RFC 8032) makes the Rust issuer and Go verifier interoperate with no shared
+  runtime. Other channels ignore `capability`.
 - `GET /v1/sniff?resource=|prefix=|kind=|agent=|min=|min_tier=|limit=` →
   `{signals: [...]}` with intensities decayed to now, strongest first.
   Default `min` is the evaporation threshold, default `limit` 200.
