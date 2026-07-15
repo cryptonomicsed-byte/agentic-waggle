@@ -4,3 +4,4 @@ waggle-data/
 __pycache__/
 *.pyc
 node_modules/
+oracle/target/
