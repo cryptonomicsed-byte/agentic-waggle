@@ -99,7 +99,7 @@ func builtinChannels() []Channel {
 				{Channel: "gold", Mode: "low", Ref: 0.5, Floor: 0.25},
 			}},
 		{Name: "taboo",
-			Doc:              "ethical exclusion (Ọbàtálá): slow-decay suppression of a territory with the justification in meta. Not a dead-end — a judgment. Suppresses gold readings nearby.",
+			Doc:              "ethical exclusion: slow-decay suppression of a territory with the justification in meta. Not a dead-end — a judgment. Suppresses gold readings nearby.",
 			DefaultHalfLifeS: 86400, DecayKernel: "power", DefaultAlpha: 0.5,
 			CrossInhibits: []Inhibition{
 				{Channel: "gold", Mode: "high", Floor: 0.1},

@@ -198,7 +198,7 @@ func (s *Server) handleDeposit(w http.ResponseWriter, r *http.Request) {
 		authed := s.tabooAuth.verify(sig.Agent, req.Capability, time.Now())
 		if s.tabooAuth.enforce && !authed {
 			writeErr(w, http.StatusForbidden,
-				"taboo deposits require a valid Èṣù capability token (scope=taboo); see manifest action deposit param 'capability'")
+				"taboo deposits require a valid issuer capability token (scope=taboo); see manifest action deposit param 'capability'")
 			return
 		}
 		sig.TabooAuthenticated = &authed
