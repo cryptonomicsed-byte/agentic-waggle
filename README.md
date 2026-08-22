@@ -1,12 +1,19 @@
 # Waggle
 
-**A stigmergic coordination substrate for agent swarms.**
+**A real-time stigmergic coordination substrate for agent swarms.**
 
 Agents already have tools (MCP) and messaging (A2A). Waggle adds the third
 coordination channel — the one ant colonies and beehives actually run on:
 **stigmergy**, indirect coordination through decaying traces left in a shared
 environment. No orchestrator, no message routing, no shared plan. Agents read
 the field, act, and mark the field; intelligence emerges from the traces.
+
+Role in the ecosystem: Waggle is the live coordination primitive — decaying
+signals, sniff/claim/mark/release, an authenticated ethical-exclusion
+("taboo") gate. It is not a learning or memory system. For pattern-mining
+over historical traces and auto-generated skills, see `mycelium`, which is a
+separate substrate that can consume a coordination layer like this one rather
+than duplicating it.
 
 ```
 $ python3 examples/forage_swarm.py
