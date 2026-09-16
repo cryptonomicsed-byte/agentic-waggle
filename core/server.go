@@ -27,6 +27,7 @@ type Server struct {
 	territories *Territories
 	hub         *Hub
 	store       *Store
+	gate        *EsuGate
 	mux         *http.ServeMux
 	start       time.Time
 	dataDir     string         // journal directory; recall needs it ("" = no persistence)
@@ -54,7 +55,13 @@ func (s *Server) EnableTabooAuth(pubHex string, enforce bool) error {
 	return nil
 }
 
-func NewServer(store *Store) *Server {
+// ServerConfig holds options that used to be hard-coded but now come from flags.
+type ServerConfig struct {
+	TabooAuthKey string // hex ed25519 public key; empty = taboo auth disabled
+	RequireAuth  bool   // hard-reject writes without a valid token
+}
+
+func NewServer(store *Store, cfg ServerConfig) *Server {
 	s := &Server{
 		field:       NewField(),
 		agents:      NewRegistry(),
@@ -65,6 +72,7 @@ func NewServer(store *Store) *Server {
 		territories: NewTerritories(),
 		hub:         NewHub(),
 		store:       store,
+		gate:        NewEsuGate(cfg.TabooAuthKey, cfg.RequireAuth),
 		mux:         http.NewServeMux(),
 		start:       time.Now(),
 	}
@@ -78,12 +86,24 @@ func (s *Server) routes() {
 	m := s.mux
 	m.HandleFunc("GET /.well-known/waggle.json", s.handleManifest)
 	m.HandleFunc("GET /v1/status", s.handleStatus)
+	m.HandleFunc("GET /v1/rings", s.gate.handleRings) // Sybil ring report
 
+	// Registration: open, issues a session token.
 	m.HandleFunc("POST /v1/agents", s.handleRegister)
 	m.HandleFunc("GET /v1/agents", s.handleAgents)
 	m.HandleFunc("GET /v1/agents/{id}", s.handleAgent)
 
-	m.HandleFunc("POST /v1/signals", s.handleDeposit)
+	// Write verbs: capability-gated.
+	m.Handle("POST /v1/signals",
+		s.gate.WriteAuthMiddleware("signal", http.HandlerFunc(s.handleDeposit)))
+	m.Handle("POST /v1/claims",
+		s.gate.WriteAuthMiddleware("claim", http.HandlerFunc(s.handleClaim)))
+	m.Handle("POST /v1/claims/release",
+		s.gate.WriteAuthMiddleware("release", http.HandlerFunc(s.handleRelease)))
+	m.Handle("POST /v1/dances",
+		s.gate.WriteAuthMiddleware("dance", http.HandlerFunc(s.handleDance)))
+
+	// Read verbs: open ("scent is public by design").
 	m.HandleFunc("GET /v1/sniff", s.handleSniff)
 	m.HandleFunc("POST /v1/sniff/batch", s.handleSniffBatch)
 	m.HandleFunc("GET /v1/gradient", s.handleGradient)
@@ -94,26 +114,25 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /v1/channels", s.handleChannels)
 	m.HandleFunc("POST /v1/channels", s.handleChannelRegister)
 
-	m.HandleFunc("POST /v1/watches", s.handleWatchRegister)
+	m.Handle("POST /v1/watches",
+		s.gate.WriteAuthMiddleware("watch", http.HandlerFunc(s.handleWatchRegister)))
 	m.HandleFunc("GET /v1/watches", s.handleWatches)
-	m.HandleFunc("POST /v1/ingest/{id}", s.handleIngest)
+	m.Handle("POST /v1/ingest/{id}",
+		s.gate.WriteAuthMiddleware("ingest", http.HandlerFunc(s.handleIngest)))
 
 	m.HandleFunc("POST /v1/territories", s.handleTerritorySet)
 	m.HandleFunc("GET /v1/territories", s.handleTerritories)
 
 	m.HandleFunc("GET /v1/snapshot", s.handleSnapshotExport)
 	m.HandleFunc("POST /v1/snapshot/load", s.handleSnapshotLoad)
-
-	m.HandleFunc("POST /v1/claims", s.handleClaim)
-	m.HandleFunc("POST /v1/claims/release", s.handleRelease)
 	m.HandleFunc("GET /v1/claims", s.handleClaims)
-
-	m.HandleFunc("POST /v1/dances", s.handleDance)
 	m.HandleFunc("GET /v1/dances", s.handleDances)
 
 	m.HandleFunc("GET /v1/memory/{ns...}", s.handleMemoryGet)
-	m.HandleFunc("PUT /v1/memory/{ns...}", s.handleMemoryPut)
-	m.HandleFunc("DELETE /v1/memory/{ns...}", s.handleMemoryDelete)
+	m.Handle("PUT /v1/memory/{ns...}",
+		s.gate.WriteAuthMiddleware("memory", http.HandlerFunc(s.handleMemoryPut)))
+	m.Handle("DELETE /v1/memory/{ns...}",
+		s.gate.WriteAuthMiddleware("memory", http.HandlerFunc(s.handleMemoryDelete)))
 
 	m.HandleFunc("GET /v1/events", s.handleEvents)
 	m.HandleFunc("GET /", s.handleObservatory)
@@ -154,8 +173,26 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := s.agents.Register(p)
+	// Mint an Èṣù session token; origin recorded for lineage/Sybil tracking.
+	origin := r.Header.Get("X-Waggle-Origin")
+	if origin == "" {
+		origin = r.RemoteAddr
+	}
+	cred := out.ID + ":" + s.gate.Register(out.ID, origin)
 	s.emit("agent", out)
-	writeJSON(w, http.StatusOK, out)
+	// Response is the flat profile (backward-compatible) plus a "token" field
+	// containing the credential to use in X-Waggle-Token on subsequent writes.
+	resp := map[string]any{
+		"id":               out.ID,
+		"name":             out.Name,
+		"goals":            out.Goals,
+		"skills":           out.Skills,
+		"memory_namespace": out.MemoryNamespace,
+		"registered_at":    out.RegisteredAt,
+		"last_seen":        out.LastSeen,
+		"token":            cred, // new field — "{agent_id}:{bearer}"
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
@@ -654,13 +691,16 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	resources, signals := s.field.Stats()
+	rings := s.gate.SuspectedRings(10*time.Minute, 3)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"service":   "waggle",
-		"uptime_s":  time.Since(s.start).Seconds(),
-		"agents":    len(s.agents.List()),
-		"resources": resources,
-		"signals":   signals,
-		"claims":    len(s.claims.List()),
+		"service":         "waggle",
+		"uptime_s":        time.Since(s.start).Seconds(),
+		"agents":          len(s.agents.List()),
+		"resources":       resources,
+		"signals":         signals,
+		"claims":          len(s.claims.List()),
+		"watches":         len(s.watches.List()),
+		"suspected_rings": len(rings),
 	})
 }
 

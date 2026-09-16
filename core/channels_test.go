@@ -172,7 +172,7 @@ func TestBatchRollup(t *testing.T) {
 }
 
 func TestTerritoryTempoAndVelocity(t *testing.T) {
-	ts := httptest.NewServer(NewServer(nil))
+	ts := httptest.NewServer(NewServer(nil, ServerConfig{}))
 	defer ts.Close()
 
 	// slow territory: tempo 4 quadruples the default half-life
@@ -216,7 +216,7 @@ func TestTerritoryTempoAndVelocity(t *testing.T) {
 }
 
 func TestWatchIngest(t *testing.T) {
-	ts := httptest.NewServer(NewServer(nil))
+	ts := httptest.NewServer(NewServer(nil, ServerConfig{}))
 	defer ts.Close()
 
 	code, reg := doJSON(t, ts, "POST", "/v1/watches", map[string]any{
@@ -258,7 +258,7 @@ func TestWatchIngest(t *testing.T) {
 }
 
 func TestChannelRegistrationAndManifest(t *testing.T) {
-	ts := httptest.NewServer(NewServer(nil))
+	ts := httptest.NewServer(NewServer(nil, ServerConfig{}))
 	defer ts.Close()
 
 	code, ch := doJSON(t, ts, "POST", "/v1/channels", map[string]any{
@@ -352,7 +352,7 @@ func TestRecall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(store)
+	srv := NewServer(store, ServerConfig{})
 	if err := srv.replay(dir); err != nil {
 		t.Fatal(err)
 	}
@@ -388,7 +388,7 @@ func TestRecall(t *testing.T) {
 	store.Close()
 
 	// no journal → 409
-	ts2 := httptest.NewServer(NewServer(nil))
+	ts2 := httptest.NewServer(NewServer(nil, ServerConfig{}))
 	defer ts2.Close()
 	if code, _ := doJSON(t, ts2, "GET", "/v1/recall?resource=r&at="+time.Now().Format(time.RFC3339), nil); code != 409 {
 		t.Fatalf("recall without journal want 409, got %d", code)
@@ -396,7 +396,7 @@ func TestRecall(t *testing.T) {
 }
 
 func TestBatchSniffEndpoint(t *testing.T) {
-	ts := httptest.NewServer(NewServer(nil))
+	ts := httptest.NewServer(NewServer(nil, ServerConfig{}))
 	defer ts.Close()
 
 	doJSON(t, ts, "POST", "/v1/signals", map[string]any{"agent": "a1", "resource": "repo://src/a", "kind": "gold", "intensity": 5})
@@ -424,7 +424,7 @@ func TestExplainEndpointAndReplayOfNewTypes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(store)
+	srv := NewServer(store, ServerConfig{})
 	if err := srv.replay(dir); err != nil {
 		t.Fatal(err)
 	}
@@ -450,7 +450,7 @@ func TestExplainEndpointAndReplayOfNewTypes(t *testing.T) {
 	store.Close()
 
 	// restart: channels, watches and territories survive the journal
-	srv2 := NewServer(nil)
+	srv2 := NewServer(nil, ServerConfig{})
 	if err := srv2.replay(dir); err != nil {
 		t.Fatalf("replay: %v", err)
 	}

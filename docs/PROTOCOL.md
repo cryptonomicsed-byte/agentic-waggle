@@ -5,6 +5,9 @@ substrate's own manifest: `GET /.well-known/waggle.json`.
 
 Base URL default: `http://127.0.0.1:7777`.
 
+**Port collision note:** `:7777` is also Omo-Koda2's kernel default. Run waggled
+with `--addr :7778` when co-located with `omokoda-core`.
+
 ## Concepts
 
 **Signal** — a decaying scent mark on a resource.
@@ -92,12 +95,57 @@ defaults, so swarms that never opt in behave identically run after run.
 
 ## Endpoints
 
+### Authentication
+
+Write verbs (`POST /v1/signals`, `/v1/claims`, `/v1/claims/release`,
+`/v1/dances`, `/v1/watches`, `/v1/ingest/{id}`, `PUT/DELETE /v1/memory/…`)
+require an Èṣù session token obtained at registration:
+
+```
+POST /v1/agents  →  response includes "token": "{agent_id}:{bearer}"
+```
+
+Pass it on writes:
+
+```
+X-Waggle-Token: {agent_id}:{bearer}
+# or
+Authorization: Bearer {agent_id}:{bearer}
+```
+
+**Enforcement modes:**
+
+| Mode | Behaviour |
+|------|-----------|
+| default (open) | Missing/invalid token logged, request allowed. Backward-compatible. |
+| `--require-auth` | Missing/invalid token → `401`. Use in production. |
+
+**Taboo signals** additionally require an ed25519 capability in the body:
+
+```json
+{"kind": "taboo", "capability": "<hex_payload>.<hex_sig>", ...}
+```
+
+Active only when `--taboo-auth-key <hex_pubkey>` is set. Capability minted by
+`TabooCapIssuer` in `Omo-Koda2/omokoda-core/src/waggle/taboo_cap.rs`.
+
+**Mark throttle:** 30-burst / 0.5 per second per agent. Excess → `429`.
+
+**Read verbs** (`GET /v1/sniff`, `/v1/gradient`, `/v1/claims`, `/v1/dances`,
+`GET /v1/memory/…`, `/v1/events`) are always open — scent is public by design.
+
+### Sybil detection
+
+`GET /v1/rings` — agents that registered from the same `X-Waggle-Origin` within
+10 minutes, cluster size ≥ 3. Returns `{rings: [{origin, members}]}`. Also
+visible in `GET /v1/status` as `suspected_rings` count.
+
 ### Agents
 - `POST /v1/agents` `{id?, name?, goals?, skills?, response_thresholds?}` →
-  profile. Idempotent by `id`; re-registering resumes identity and preserves
-  earlier goals/skills/thresholds if omitted. `response_thresholds` maps a
-  signal kind to the minimum intensity this agent responds to (division of
-  labor via varied sensitivity; enforced client-side by the SDK).
+  profile + `"token"`. Idempotent by `id`; re-registering resumes identity,
+  rotates the session token, and preserves earlier goals/skills/thresholds if
+  omitted. `response_thresholds` maps a signal kind to the minimum intensity
+  this agent responds to (enforced client-side by the SDK).
 - `GET /v1/agents` → `{agents: [...]}` most recently active first.
 - `GET /v1/agents/{id}` → profile or 404.
 
@@ -206,9 +254,23 @@ defaults, so swarms that never opt in behave identically run after run.
 - `GET /v1/memory/{namespace}?keys=1` → `{keys: [...]}`.
 - `DELETE /v1/memory/{namespace}/{key}` → `{deleted: true}`.
 
+### Watches (Ògún tool routing)
+
+The Rust waggle client (`omokoda-core/src/waggle/mod.rs`) registers a watch
+once at startup and posts tool outcomes to it. The server converts outcomes to
+field signals automatically.
+
+- `POST /v1/watches` `{agent, name?, resource_prefix?}` → `{watch: {id, ...}}`.
+  `resource_prefix` filters which resources this watch ingests (e.g. `tool://`).
+- `GET /v1/watches` → `{watches: [...]}`.
+- `POST /v1/ingest/{watch_id}` `{resource, outcome, note?}` → `{signal, watch_id}`.
+  `outcome` must be `"success"` (→ `gold` signal) or `"failure"` (→ `dead-end`).
+  Intensity 4.0, half-life 3600s.
+
 ### Introspection
 - `GET /.well-known/waggle.json` — the manifest: all actions + conventions + live counts.
-- `GET /v1/status` — health and counts.
+- `GET /v1/status` — health and counts including `watches`, `suspected_rings`.
+- `GET /v1/rings` — Sybil ring report (see Authentication above).
 - `GET /v1/events` — SSE stream of every mutation. Event types: `signal`,
   `claim`, `release`, `dance`, `agent`, `memory`, `memory_delete`, `channel`,
   `watch`, `territory`; each event's `data` is `{type, at, payload}`.

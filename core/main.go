@@ -20,7 +20,14 @@ func main() {
 	debug := flag.Bool("debug", false, "enable /v1/debug/attack-metrics for red-team scoring (off in production)")
 	tabooKey := flag.String("taboo-auth-key", "", "Èṣù ed25519 public key (hex) — verify taboo-capability tokens; taboo deposits get taboo_authenticated set")
 	tabooEnforce := flag.Bool("taboo-auth-enforce", false, "reject taboo deposits without a valid capability (requires -taboo-auth-key)")
+	requireAuth := flag.Bool("require-auth", false, "reject writes without a valid X-Waggle-Token (default: open/warn mode)")
 	flag.Parse()
+
+	// Port :7777 collides with Omo-Koda2 kernel when co-located.
+	// Use --addr :7778 (or WAGGLE_ADDR env) when running alongside omokoda-core.
+	if *addr == ":7777" {
+		log.Printf("waggled: NOTE — default port :7777 collides with Omo-Koda2 kernel when co-located; pass --addr :7778 to disambiguate")
+	}
 
 	store, err := OpenStore(*dataDir)
 	if err != nil {
@@ -28,7 +35,11 @@ func main() {
 	}
 	defer store.Close()
 
-	srv := NewServer(store)
+	cfg := ServerConfig{
+		TabooAuthKey: *tabooKey,
+		RequireAuth:  *requireAuth,
+	}
+	srv := NewServer(store, cfg)
 	if *debug {
 		srv.EnableDebug()
 		log.Printf("waggled: -debug on — attack metrics at /v1/debug/attack-metrics")

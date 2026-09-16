@@ -29,7 +29,7 @@ func doJSON(t *testing.T, ts *httptest.Server, method, path string, body any) (i
 }
 
 func TestAPIEndToEnd(t *testing.T) {
-	ts := httptest.NewServer(NewServer(nil))
+	ts := httptest.NewServer(NewServer(nil, ServerConfig{}))
 	defer ts.Close()
 
 	// register two agents
@@ -121,7 +121,7 @@ func TestJournalReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(store)
+	srv := NewServer(store, ServerConfig{})
 	ts := httptest.NewServer(srv)
 
 	doJSON(t, ts, "POST", "/v1/agents", map[string]any{"id": "scout-1", "name": "Scout"})
@@ -135,7 +135,7 @@ func TestJournalReplay(t *testing.T) {
 	store.Close()
 
 	// cold start: replay the journal
-	srv2 := NewServer(nil)
+	srv2 := NewServer(nil, ServerConfig{})
 	if err := srv2.replay(dir); err != nil {
 		t.Fatalf("replay: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestJournalReplay(t *testing.T) {
 }
 
 func TestSSEEventStream(t *testing.T) {
-	ts := httptest.NewServer(NewServer(nil))
+	ts := httptest.NewServer(NewServer(nil, ServerConfig{}))
 	defer ts.Close()
 
 	resp, err := http.Get(ts.URL + "/v1/events")
