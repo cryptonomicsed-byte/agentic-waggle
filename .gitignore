@@ -1,5 +1,6 @@
 cli/target/
 core/waggled
+core/core
 waggle-data/
 __pycache__/
 *.pyc
