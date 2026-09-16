@@ -1,6 +1,7 @@
 cli/target/
 core/waggled
 core/core
+core/waggled-linux-amd64
 waggle-data/
 __pycache__/
 *.pyc
