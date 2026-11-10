@@ -3,10 +3,10 @@
 Plain JSON over HTTP. The live, authoritative version of this document is the
 substrate's own manifest: `GET /.well-known/waggle.json`.
 
-Base URL default: `http://127.0.0.1:7777`.
+Base URL default: `http://127.0.0.1:7779`.
 
-**Port collision note:** `:7777` is also Omo-Koda2's kernel default. Run waggled
-with `--addr :7778` when co-located with `omokoda-core`.
+**Ports on the VPS:** `:7777` is ares-buzz-relay and `:7778` is the Ọmọ Kọ́dà
+kernel, so waggled defaults to `127.0.0.1:7779`.
 
 ## Concepts
 

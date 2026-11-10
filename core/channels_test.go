@@ -3,6 +3,7 @@ package main
 import (
 	"math"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -373,7 +374,7 @@ func TestRecall(t *testing.T) {
 	}
 
 	// recall at mid sees the historical verdict — the regression detector's raw material
-	code, rec := doJSON(t, ts, "GET", "/v1/recall?resource=loom://s/p1&at="+mid.Format(time.RFC3339Nano), nil)
+	code, rec := doJSON(t, ts, "GET", "/v1/recall?resource=loom://s/p1&at="+url.QueryEscape(mid.Format(time.RFC3339Nano)), nil)
 	if code != 200 {
 		t.Fatalf("recall: %d %v", code, rec)
 	}
@@ -390,7 +391,7 @@ func TestRecall(t *testing.T) {
 	// no journal → 409
 	ts2 := httptest.NewServer(NewServer(nil, ServerConfig{}))
 	defer ts2.Close()
-	if code, _ := doJSON(t, ts2, "GET", "/v1/recall?resource=r&at="+time.Now().Format(time.RFC3339), nil); code != 409 {
+	if code, _ := doJSON(t, ts2, "GET", "/v1/recall?resource=r&at="+url.QueryEscape(time.Now().Format(time.RFC3339)), nil); code != 409 {
 		t.Fatalf("recall without journal want 409, got %d", code)
 	}
 }

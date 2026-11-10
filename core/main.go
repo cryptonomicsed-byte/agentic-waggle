@@ -4,18 +4,19 @@
 //
 // Usage:
 //
-//	waggled -addr :7777 -data ./waggle-data
+//	waggled -addr 127.0.0.1:7779 -data ./waggle-data
 package main
 
 import (
 	"flag"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 )
 
 func main() {
-	addr := flag.String("addr", ":7777", "listen address")
+	addr := flag.String("addr", "127.0.0.1:7779", "listen address (7777 = ares-buzz-relay, 7778 = omokoda kernel)")
 	dataDir := flag.String("data", "", "journal directory (empty = in-memory only)")
 	debug := flag.Bool("debug", false, "enable /v1/debug/attack-metrics for red-team scoring (off in production)")
 	tabooKey := flag.String("taboo-auth-key", "", "Èṣù ed25519 public key (hex) — verify taboo-capability tokens; taboo deposits get taboo_authenticated set")
@@ -23,10 +24,10 @@ func main() {
 	requireAuth := flag.Bool("require-auth", false, "reject writes without a valid X-Waggle-Token (default: open/warn mode)")
 	flag.Parse()
 
-	// Port :7777 collides with Omo-Koda2 kernel when co-located.
-	// Use --addr :7778 (or WAGGLE_ADDR env) when running alongside omokoda-core.
-	if *addr == ":7777" {
-		log.Printf("waggled: NOTE — default port :7777 collides with Omo-Koda2 kernel when co-located; pass --addr :7778 to disambiguate")
+	// :7777 is ares-buzz-relay and :7778 the omokoda kernel on the VPS; both
+	// answer HTTP, so a waggle client pointed at them fails silently.
+	if strings.HasSuffix(*addr, ":7777") || strings.HasSuffix(*addr, ":7778") {
+		log.Printf("waggled: WARNING — %s collides with ares-buzz-relay (:7777) or the omokoda kernel (:7778); default is 127.0.0.1:7779", *addr)
 	}
 
 	store, err := OpenStore(*dataDir)
